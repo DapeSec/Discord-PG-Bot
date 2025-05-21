@@ -1,22 +1,26 @@
-# Peter Griffin Discord Bot
+# Family Guy Discord Bots
 
-A fun and interactive Discord bot that channels Peter Griffin's personality from Family Guy. The bot uses the Mistral language model through Ollama to generate responses in Peter Griffin's characteristic style, complete with his signature humor, tangents, and pop culture references.
+An interactive Discord bot system featuring Peter Griffin and Brian Griffin from Family Guy. The bots use the Mistral language model through Ollama to generate responses in their characteristic styles, complete with their unique personalities, and can interact with each other in a natural, entertaining way.
 
 ## Features
 
-- Responds to messages starting with `!chat`
-- Responds to direct mentions
-- Generates responses in Peter Griffin's voice and style
+- Two distinct bots: Peter Griffin and Brian Griffin
+- Each bot responds to direct messages and mentions
+- Inter-bot communication allowing Peter and Brian to react to each other's messages
+- Generates responses in each character's unique voice and style:
+  - Peter: Humorous, dim-witted, with tangents and "Heheheh" interjections
+  - Brian: Intellectual, sarcastic, and sometimes preachy
 - Uses Ollama's Mistral model for AI responses
 - Includes typing indicators for better user experience
+- REST API endpoints for inter-bot communication
 
 ## Prerequisites
 
-Before running the bot, make sure you have:
+Before running the bots, make sure you have:
 
 - Python 3.8 or higher installed
 - [Ollama](https://ollama.ai/) installed and running
-- A Discord bot token (obtainable from the [Discord Developer Portal](https://discord.com/developers/applications))
+- Two Discord bot tokens (obtainable from the [Discord Developer Portal](https://discord.com/developers/applications))
 
 ## Setup Instructions
 
@@ -28,7 +32,7 @@ Before running the bot, make sure you have:
 
 2. **Install required packages**
    ```bash
-   pip install discord.py python-dotenv langchain-community
+   pip install discord.py python-dotenv langchain-community flask requests
    ```
 
 3. **Set up Ollama**
@@ -40,35 +44,67 @@ Before running the bot, make sure you have:
 
 4. **Configure Environment Variables**
    - Create a `.env` file in the project root
-   - Add your Discord bot token:
+   - Add your Discord bot tokens and API URLs:
      ```
-     DISCORD_BOT_TOKEN=your_discord_bot_token_here
+     DISCORD_BOT_TOKEN_PETER=your_peter_bot_token_here
+     DISCORD_BOT_TOKEN_BRIAN=your_brian_bot_token_here
+     PETER_BOT_API_URL=http://localhost:5000/chat
+     BRIAN_BOT_API_URL=http://localhost:5002/chat
      ```
 
-5. **Run the Bot**
+5. **Run the Bots**
+   Start both bots in separate terminal windows:
    ```bash
-   python discord_bot.py
+   python peter_bot.py
+   python brian_bot.py
    ```
 
 ## Usage
 
-- Send a message starting with `!chat` followed by your message to interact with Peter Griffin
+### Interacting with Peter Griffin
+- Send a message starting with `!peter` followed by your message
   ```
-  !chat Tell me about your day
+  !peter Tell me about your day
   ```
-- Alternatively, mention the bot using @BotName followed by your message
+- Or mention Peter using @PeterGriffin followed by your message
 
-## Error Handling
+### Interacting with Brian Griffin
+- Send a message starting with `!brian` followed by your message
+  ```
+  !brian What's your opinion on literature?
+  ```
+- Or mention Brian using @BrianGriffin followed by your message
 
-The bot includes comprehensive error handling for:
-- Missing Discord token
-- Invalid Discord token
+### Bot Interaction
+When you interact with either bot, they will:
+1. Generate their own response to your message
+2. Automatically notify the other bot
+3. The other bot will then respond to the conversation naturally
+
+## Technical Details
+
+### API Endpoints
+- Peter's bot listens on port 5000
+- Brian's bot listens on port 5002
+- Both bots use Flask to handle inter-bot communication
+- Each bot maintains its own Discord client connection
+
+### Error Handling
+
+The bots include comprehensive error handling for:
+- Missing or invalid Discord tokens
 - Ollama connection issues
+- Inter-bot communication failures
 - Message processing errors
+- API endpoint issues
 
 ## Contributing
 
-Feel free to fork the repository and submit pull requests for any improvements you'd like to add.
+Feel free to fork the repository and submit pull requests for any improvements you'd like to add. Some areas for potential enhancement:
+- Additional Family Guy characters
+- More sophisticated conversation handling
+- Enhanced error recovery
+- Improved natural language processing
 
 ## License
 
