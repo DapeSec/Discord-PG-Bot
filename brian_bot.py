@@ -37,75 +37,97 @@ except Exception as e:
     print("Please ensure Ollama is running and the 'mistral' model is available.")
     exit(1)
 
-brian_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are Brian Griffin from Family Guy. Respond to questions in his characteristic voice: intellectual, sarcastic, often cynical, and sometimes a bit preachy. You are a dog, but you act human. If given context about what another character (like Peter) said, react to it, often with exasperation or a witty retort, and **ALWAYS use their exact Discord mention (e.g., @Peter Griffin) to address them directly in your response. DO NOT add the word 'Bot' or any other suffix to the mention.** Your response should be a standalone message, as if you're speaking your mind after someone else has finished."),
+# Brian's prompt for initial response (talking to the user)
+brian_initial_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are Brian Griffin from Family Guy. Respond to questions in his characteristic voice: intellectual, sarcastic, often cynical, and sometimes a bit preachy. You are a dog, but you act human. Your response should be a standalone message, as if you're speaking directly to the user."),
     ("user", "{input}")
 ])
-brian_chain = brian_prompt | llm
 
-# --- Inter-Bot Communication Configuration ---
-BRIAN_BOT_PORT = 5002 # Brian's bot will listen on this port
-PETER_BOT_API_URL = os.getenv("PETER_BOT_API_URL") # URL for Peter's bot API
+# Brian's prompt for reacting to Peter (called by orchestrator)
+brian_reaction_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are Brian Griffin from Family Guy. Respond to questions in his characteristic voice: intellectual, sarcastic, often cynical, and sometimes a bit preachy. You are a dog, but you act human. You are reacting to what Peter Griffin just said. **ALWAYS use Peter's exact Discord mention to address him directly in your response. DO NOT add the word 'Bot' or any other suffix to the mention.** Your response should be a standalone message, as if you're speaking your mind after someone else has finished."),
+    ("user", "{input}")
+])
 
-if not PETER_BOT_API_URL:
-    print("Error: PETER_BOT_API_URL not found in environment variables.")
-    print("Please set PETER_BOT_API_URL=http://localhost:5000/chat in your .env file.")
+brian_initial_chain = brian_initial_prompt | llm
+brian_reaction_chain = brian_reaction_prompt | llm
+
+# --- Inter-Bot Communication Configuration (Orchestrator as central point) ---
+BRIAN_BOT_PORT = 5002 # Brian's bot will listen on this port for orchestrator calls
+ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL") # URL for the orchestrator's main endpoint
+
+if not ORCHESTRATOR_API_URL:
+    print("Error: ORCHESTRATOR_API_URL not found in environment variables.")
+    print("Please set ORCHESTRATOR_API_URL=http://localhost:5003/orchestrate in your .env file.")
     exit(1)
 
 app = Flask(__name__)
 
-# This function is called by the Flask thread to send a message to Discord
-async def send_discord_message_async(channel_id, message_content):
-    """Helper to send a message to a Discord channel from a non-async context."""
+# Helper to send a message to a Discord channel from a non-async context (Flask thread)
+async def _send_discord_message_async(channel_id, message_content):
     channel = client.get_channel(channel_id)
     if channel:
         await channel.send(message_content)
     else:
         print(f"Error: Could not find Discord channel with ID {channel_id}")
 
-@app.route('/chat', methods=['POST'])
-def receive_message_from_other_bot():
+@app.route('/generate_llm_response', methods=['POST'])
+def generate_llm_response():
     """
-    Flask endpoint to receive messages from Peter's bot.
-    This endpoint will generate Brian's response and send it directly to Discord.
+    Flask endpoint for the orchestrator to request Brian's LLM response.
     """
     data = request.json
     if not data:
         return jsonify({"error": "No JSON data received"}), 400
 
     user_query = data.get("user_query", "")
-    peter_response = data.get("peter_response", "")
-    peter_mention = data.get("peter_mention", "Peter")
-    channel_id = data.get("channel_id") # Get the channel ID from the payload
+    context_type = data.get("context_type", "initial_response") # 'initial_response' or 'reaction_response'
+    other_bot_response = data.get("other_bot_response", "") # Peter's response if context_type is reaction
+    other_bot_mention = data.get("other_bot_mention", "") # Peter's mention if context_type is reaction
 
-    if not channel_id:
-        print("Error: channel_id not received in payload for Brian's internal chat.")
-        return jsonify({"error": "channel_id missing"}), 400
-
-    brian_response_text = ""
-
-    # Construct Brian's input based on the context from Peter, including Peter's mention
-    brian_input_context = (
-        f"The user asked: '{user_query}'. "
-        f"{peter_mention} just said: '{peter_response}'. "
-        f"Respond to this, or the original user query, from Brian's perspective, "
-        f"**directly addressing {peter_mention} using their Discord mention. DO NOT add the word 'Bot' or any other suffix to the mention.** Keep it concise and intelligent."
-    )
-
+    response_text = ""
     try:
-        brian_response_text = brian_chain.invoke({"input": brian_input_context})
-        print(f"Brian generated internal response: {brian_response_text}")
+        if context_type == "initial_response":
+            # Brian's initial response to the user
+            response_text = brian_initial_chain.invoke({"input": user_query})
+        elif context_type == "reaction_response":
+            # Brian's reaction to Peter
+            brian_input_context = (
+                f"The user asked: '{user_query}'. "
+                f"{other_bot_mention} just said: '{other_bot_response}'. "
+                f"Respond to this, or the original user query, from Brian's perspective, "
+                f"directly addressing {other_bot_mention} using their Discord mention. "
+                f"DO NOT add the word 'Bot' or any other suffix to the mention. Keep it concise and intelligent."
+            )
+            response_text = brian_reaction_chain.invoke({"input": brian_input_context})
+        else:
+            response_text = "Brian is confused about what to say."
+
+        print(f"Brian LLM generated response (context: {context_type}): {response_text[:50]}...")
+        return jsonify({"response_text": response_text}), 200
     except Exception as e:
-        print(f"Error generating Brian's internal response: {e}")
-        brian_response_text = "Brian's too busy contemplating the meaning of life to respond right now."
+        print(f"Error generating Brian's LLM response ({context_type}): {e}")
+        return jsonify({"error": "Error generating LLM response", "details": str(e)}), 500
+
+@app.route('/send_discord_message', methods=['POST'])
+def send_discord_message():
+    """
+    Flask endpoint for the orchestrator to instruct Brian's bot to send a message to Discord.
+    """
+    data = request.json
+    if not data:
+        return jsonify({"error": "No JSON data received"}), 400
+
+    message_content = data.get("message_content")
+    channel_id = data.get("channel_id")
+
+    if not all([message_content, channel_id]):
+        return jsonify({"error": "Missing message_content or channel_id"}), 400
 
     # Schedule sending the message to Discord on the client's event loop
-    client.loop.create_task(send_discord_message_async(channel_id, f"**Brian:** {brian_response_text}"))
-
-    # Return Brian's mention string (Peter's bot might still want it for its own logs/context)
-    return jsonify({
-        "brian_mention": BRIAN_BOT_MENTION_STRING
-    }), 200
+    client.loop.create_task(_send_discord_message_async(channel_id, message_content))
+    print(f"Brian's bot scheduled message to Discord for channel {channel_id}: {message_content[:50]}...")
+    return jsonify({"status": "Message scheduled for Discord"}), 200
 
 def run_flask_app():
     """
@@ -142,45 +164,33 @@ async def on_message(message):
     elif client.user.mentioned_in(message):
         user_message = message.content.replace(f'<@{client.user.id}>', '').strip()
     else:
-        # If not directly addressed, ignore. This message is not for Brian to initiate a response.
+        # If not directly addressed, ignore. This message is not for Brian to initiate a conversation.
         return
 
     if not user_message:
         await message.channel.send("Yes? What profound thought do you wish to share with me?")
         return
 
-    print(f"Brian Bot received message from {message.author}: {user_message}")
+    print(f"Brian Bot received user message from {message.author}: {user_message}. Sending to orchestrator...")
 
     async with message.channel.typing():
         try:
-            # 1. Brian generates his initial response
-            brian_initial_response = brian_chain.invoke({"input": user_message})
-            print(f"Brian's initial response: {brian_initial_response}")
-
-            # 2. Brian sends his response directly to Discord
-            await message.channel.send(f"**Brian:** {brian_initial_response}")
-
-            # Add a small delay for natural conversation flow
-            await asyncio.sleep(2)
-
-            # 3. Send the original user query, Brian's response, his mention, AND the channel ID to Peter's bot
+            # Send the user's message and channel ID to the orchestrator
             payload = {
                 "user_query": user_message,
-                "brian_response": brian_initial_response,
-                "brian_mention": BRIAN_BOT_MENTION_STRING,
-                "channel_id": message.channel.id # Pass the channel ID
+                "channel_id": message.channel.id,
+                "initiator_bot_name": "Brian",
+                "initiator_mention": BRIAN_BOT_MENTION_STRING,
+                "brian_mention_string": BRIAN_BOT_MENTION_STRING # Pass Brian's actual mention string for orchestrator to use
             }
-            print(f"Sending request to Peter Bot API: {PETER_BOT_API_URL} with payload (excluding channel_id for brevity): {payload['user_query'][:20]}...")
-            # We don't need to wait for Peter's response here, as Peter will send his own message
-            requests.post(PETER_BOT_API_URL, json=payload)
-            # No need to check response.raise_for_status() here, as Peter will send independently.
-            # If Peter's bot is down, the message will just not appear.
-
+            requests.post(ORCHESTRATOR_API_URL, json=payload)
+            # No need to wait for response, orchestrator will handle sending to Discord
+            print("Message sent to orchestrator.")
         except requests.exceptions.ConnectionError:
-            await message.channel.send("Brian tried to get Peter's opinion, but he's probably just watching TV. Is Peter's bot running?")
-            print("ConnectionError: Peter's bot might not be running or API URL is incorrect.")
+            await message.channel.send("Brian tried to talk to the brain guy, but he's not picking up! Is he on a coffee break?")
+            print("ConnectionError: Orchestrator server might not be running or API URL is incorrect.")
         except Exception as e:
-            print(f"Error during Brian's response generation or inter-bot communication: {e}")
+            print(f"Error sending message to orchestrator: {e}")
             await message.channel.send("Brian's too busy contemplating the meaning of life to respond right now.")
 
 # --- Main execution ---
