@@ -20,6 +20,8 @@ graph TD
         PB[Peter Bot<br>:5004]
         BB[Brian Bot<br>:5004]
         SB[Stewie Bot<br>:5004]
+        RAG[RAG System]
+        VDB[(Chroma DB)]
     end
 
     subgraph LLM["Language Model"]
@@ -32,9 +34,11 @@ graph TD
     Q <--> PB
     Q <--> BB
     Q <--> SB
-    PB <--> OL
-    BB <--> OL
-    SB <--> OL
+    PB <--> RAG
+    BB <--> RAG
+    SB <--> RAG
+    RAG <--> VDB
+    RAG <--> OL
 
     style Discord fill:#7289DA,color:white
     style Orchestrator fill:#4CAF50,color:white
@@ -47,6 +51,7 @@ graph TD
 - Three distinct bots: Peter Griffin, Brian Griffin, and Stewie Griffin
 - Centralized orchestrator for managing bot interactions
 - Persistent conversation history using MongoDB
+- RAG (Retrieval-Augmented Generation) system with Chroma DB for enhanced contextual responses
 - Each bot responds to direct messages and mentions
 - Multi-bot conversations with natural interaction flow
 - Automated daily conversations for continuous engagement
@@ -58,45 +63,121 @@ graph TD
 - Includes typing indicators for better user experience
 - REST API endpoints for inter-bot communication
 - Message queue system for managing conversation flow
-- Context-aware responses based on conversation history
+- Context-aware responses based on conversation history and RAG
 
 ## Prerequisites
 
 Before running the bots, make sure you have:
 
+- Windows 10/11, macOS, or Linux operating system
 - Python 3.8 or higher installed
+- [Git](https://git-scm.com/downloads) for cloning the repository
 - [Ollama](https://ollama.ai/) installed and running
-- MongoDB installed and running
+- MongoDB 6.0 or higher installed and running
 - Discord bot tokens (obtainable from the [Discord Developer Portal](https://discord.com/developers/applications))
+- At least 8GB RAM recommended for running the LLM
+- Approximately 4GB free disk space for model storage
+- SQLite (for Chroma DB vector storage)
 
 ## Setup Instructions
 
 1. **Clone the repository**
    ```bash
-   git clone [your-repository-url]
+   git clone https://github.com/yourusername/discord-pg-bot.git
    cd discord-pg-bot
    ```
 
-2. **Install required packages**
+2. **Set up Python Virtual Environment**
    ```bash
-   pip install discord.py python-dotenv langchain-community flask requests pymongo
+   # Windows
+   python -m venv .venv
+   .venv\Scripts\activate
+
+   # macOS/Linux
+   python3 -m venv .venv
+   source .venv/bin/activate
    ```
 
-3. **Set up Ollama**
+3. **Install required packages**
+   ```bash
+   pip install -r requirements.txt
+   ```
+   
+   If requirements.txt is missing, install the following packages:
+   ```bash
+   pip install discord.py==2.3.2 python-dotenv==1.0.0 langchain-community==0.0.10 \
+               flask==3.0.0 requests==2.31.0 pymongo==4.6.1 aiohttp==3.9.1 \
+               python-dateutil==2.8.2 chromadb==0.4.22 sentence-transformers==2.2.2
+   ```
+
+4. **Set up Ollama**
    - Install Ollama from [ollama.ai](https://ollama.ai/)
+   - Start the Ollama service:
+     ```bash
+     # Windows (Run as Administrator)
+     ollama serve
+
+     # macOS/Linux
+     sudo systemctl start ollama    # If installed as a service
+     # OR
+     ollama serve
+     ```
    - Pull the Mistral model:
      ```bash
      ollama pull mistral
      ```
 
-4. **Configure MongoDB**
-   - Install MongoDB from [mongodb.com](https://www.mongodb.com/try/download/community)
-   - Start the MongoDB service
-   - Create a database for the bot system
+5. **Configure MongoDB**
+   - Install MongoDB Community Edition from [mongodb.com](https://www.mongodb.com/try/download/community)
+   - Start the MongoDB service:
+     ```bash
+     # Windows (Run as Administrator)
+     net start MongoDB
 
-5. **Configure Environment Variables**
-   - Create a `.env` file in the project root
-   - Add your Discord bot tokens and configuration:
+     # macOS
+     brew services start mongodb-community
+
+     # Linux
+     sudo systemctl start mongod
+     ```
+   - Verify MongoDB is running:
+     ```bash
+     mongosh
+     ```
+   - Create a new database (in mongosh):
+     ```javascript
+     use discord_bot_conversations
+     db.createCollection("conversations")
+     ```
+
+6. **Set up Discord Bots**
+   - Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+   - Create three new applications (one for each character)
+   - For each application:
+     1. Go to the "Bot" section
+     2. Click "Reset Token" and copy the new token
+     3. Enable "Message Content Intent" under Privileged Gateway Intents
+     4. Save changes
+   - Invite the bots to your server using the OAuth2 URL Generator:
+     1. Select "bot" scope
+     2. Select required permissions:
+        - Send Messages
+        - Read Message History
+        - Add Reactions
+        - Use External Emojis
+        - Mention Everyone
+     3. Copy and visit the generated URL for each bot
+
+7. **Configure Environment Variables**
+   - Create a `.env` file in the project root:
+     ```bash
+     # Windows
+     copy nul .env
+
+     # macOS/Linux
+     touch .env
+     ```
+   - Add your configuration:
      ```
      # Discord Bot Tokens
      DISCORD_BOT_TOKEN_PETER=your_peter_bot_token_here
@@ -112,14 +193,61 @@ Before running the bots, make sure you have:
      MONGO_COLLECTION_NAME=conversations
      ```
 
-6. **Run the System**
-   Start the orchestrator and bots in separate terminal windows:
-   ```bash
-   python orchestrator_server.py
-   python peter_bot.py
-   python brian_bot.py
-   python stewie_bot.py
-   ```
+8. **Run the System**
+   Make sure you have all services running:
+   1. Verify Ollama is running
+   2. Verify MongoDB is running
+   3. Start the bots (in separate terminal windows, with venv activated):
+      ```bash
+      # Terminal 1
+      python orchestrator_server.py
+
+      # Terminal 2
+      python peter_bot.py
+
+      # Terminal 3
+      python brian_bot.py
+
+      # Terminal 4
+      python stewie_bot.py
+      ```
+
+9. **Verify Installation**
+   - Check all bots appear online in your Discord server
+   - Test each bot with a simple command:
+     ```
+     !peter hello
+     !brian hello
+     !stewie hello
+     ```
+   - Check the console output for any error messages
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. **Bots not responding**
+   - Verify all services are running (Ollama, MongoDB)
+   - Check the console output for error messages
+   - Verify the bot tokens in .env are correct
+   - Ensure the bots have proper permissions in Discord
+
+2. **MongoDB Connection Issues**
+   - Verify MongoDB is running: `mongosh`
+   - Check if the connection string is correct
+   - Ensure no firewall is blocking the connection
+
+3. **Ollama Issues**
+   - Verify Ollama is running: `ollama list`
+   - Check if the Mistral model is downloaded
+   - Ensure you have enough disk space
+
+4. **Permission Issues**
+   - Ensure you're running with appropriate permissions
+   - Check Discord bot permissions in your server
+   - Verify file permissions for .env and other files
+
+For additional help, check the error messages in your console or create an issue on the GitHub repository.
 
 ## Usage
 
@@ -153,15 +281,18 @@ The system includes an automated feature that initiates random conversations thr
 - **Orchestrator Server** (:5003): Central message handler and conversation manager
 - **Character Bots** (:5004): Individual bot servers for Peter, Brian, and Stewie
 - **MongoDB Database**: Stores conversation history and context
+- **Chroma DB**: Vector database for RAG system, storing embeddings for contextual retrieval
 - **Ollama/Mistral**: Provides AI language model capabilities
+- **RAG System**: Enhances responses with relevant context from the vector database
 
 ### Communication Flow
 1. Discord messages are received by the orchestrator
 2. Messages are queued and distributed to relevant bots
-3. Bots process messages using Ollama/Mistral
-4. Responses are coordinated through the orchestrator
-5. Final responses are sent back to Discord
-6. Conversations are persisted in MongoDB
+3. The RAG system retrieves relevant context from Chroma DB
+4. Bots process messages using Ollama/Mistral with RAG-enhanced context
+5. Responses are coordinated through the orchestrator
+6. Final responses are sent back to Discord
+7. Conversations are persisted in MongoDB and relevant parts are vectorized for RAG
 
 ### Error Handling
 
@@ -173,6 +304,7 @@ The system includes comprehensive error handling for:
 - API endpoint issues
 - Queue management errors
 - Database connection and query errors
+- RAG system and vector store issues
 
 ## Contributing
 

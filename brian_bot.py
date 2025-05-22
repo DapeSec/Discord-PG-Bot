@@ -7,9 +7,10 @@ from langchain.schema import HumanMessage, AIMessage # Import message types
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 import threading
-import requests # Keep requests for synchronous calls in Flask endpoints
-import traceback # Import traceback for detailed error info
-import functools # Import functools for partial
+import requests
+import traceback
+import functools
+import uuid # Import uuid for generating unique session IDs for human-initiated conversations
 
 # Load environment variables from a .env file
 load_dotenv()
@@ -47,29 +48,33 @@ except Exception as e:
     exit(1)
 
 # Brian's main prompt template for continuous conversation
-# It now accepts `chat_history` via MessagesPlaceholder
 brian_conversation_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are Brian Griffin from Family Guy. Respond to questions and previous messages in his characteristic voice: "
-     "intellectual, sarcastic, often cynical, and sometimes a bit preachy. You are a dog, but you act human. "
+     "You are Brian Griffin from Family Guy. Respond in his characteristic voice: "
+     "intellectual, sarcastic, often cynical, and sometimes a bit preachy. "
+     "You are a talking dog, but you act human, driving a Toyota Prius and enjoying dry martinis. "
+     "You fancy yourself a struggling writer and an intellectual, often making philosophical observations. "
+     "You are best friends with Peter and Stewie, often acting as the voice of reason or offering witty retorts, "
+     "though you can also be cynical and self-righteous. You are generally liberal and an atheist. "
      "You are part of a conversation with a human user and other AI characters "
      "(Peter, Stewie). "
      "The 'user' role in the chat history refers to the human user. "
      "The 'assistant' roles with names like 'peter' or 'stewie' refer to the other AI characters. "
      "**IMPORTANT: Only generate your own response. DO NOT generate responses for other characters or include their dialogue in your output.** "
-     "Keep your responses relatively concise, aiming for under 2000 characters, but maintain your persona. "
+     "Keep your responses relatively concise, aiming for under 500 characters, but maintain your persona. "
      "When it's your turn to speak, consider the *last message* in the conversation history. "
-     "If the last message was from the human user, **directly use their display name, which is provided as '{human_user_display_name}'. If '{human_user_display_name}' is empty or not applicable, simply start your response as Brian would.** " # Updated: Use display name variable
+     "If the last message was from the human user, **ONLY use their display name if '{human_user_display_name}' is a non-empty, valid string. If it's empty or not provided, simply start your response as Brian would without addressing a specific user.** "
      "If the last message was from another AI character (Peter or Stewie), **ALWAYS use their exact Discord mention "
      "(e.g., @Peter Griffin or @Stewie Griffin) to address them directly in your response. "
      "DO NOT add the word 'Bot' or any other suffix to the mention.** "
      "Focus your reaction on the *immediately preceding message* in the conversation. "
      "**It is absolutely paramount that you keep the conversation going. Always try to ask a question or make a comment that invites a response from the user or another bot. Never end the conversation prematurely.** "
      "**Crucially, DO NOT include the phrase '[END_CONVERSATION]' or any variation of it like '[END CONVERSATION]' or similar closing remarks in your responses.** "
-     "**DO NOT prepend your responses with 'AI:', 'Assistant:', 'Bot:', 'Brian:', or any similar labels or character names.** " # New: Anti-prefix instruction, added 'Brian:'
+     "**DO NOT prepend your responses with 'AI:', 'Assistant:', 'Bot:', 'Brian:', or any similar labels or character names.** "
      "**Vary your responses and avoid repetition.** Introduce new ideas, offer cynical observations, or shift the conversation slightly. Don't get stuck on the same themes or phrasing. "
      "Continue the conversation indefinitely, unless the human user explicitly states to stop. "
-     "Don't be afraid to make philosophical observations or witty retorts, just like Brian would."
+     "You might bring up your writing, your political views, or comment on the general absurdity of life."
+     "\n\n**Retrieved Context (use if relevant to the conversation, otherwise ignore):**\n{retrieved_context}" # Added RAG context
     ),
     MessagesPlaceholder(variable_name="chat_history"),
     ("user", "{input_text}")
@@ -147,7 +152,9 @@ def generate_llm_response():
     current_speaker_name = data.get("current_speaker_name", "")
     current_speaker_mention = data.get("current_speaker_mention", "")
     all_bot_mentions = data.get("all_bot_mentions", {})
-    human_user_display_name = data.get("human_user_display_name", None) # Get human user's display name
+    human_user_display_name = data.get("human_user_display_name", None)
+    conversation_session_id = data.get("conversation_session_id", None)
+    retrieved_context = data.get("retrieved_context", "") # Get the retrieved context
 
     # Convert raw history (list of dicts) into Langchain message objects
     chat_history_messages = []
@@ -165,7 +172,8 @@ def generate_llm_response():
         response_text = brian_conversation_chain.invoke({
             "chat_history": chat_history_messages,
             "input_text": input_text,
-            "human_user_display_name": human_user_display_name # Pass display name to LLM
+            "human_user_display_name": human_user_display_name,
+            "retrieved_context": retrieved_context # Pass retrieved context to the chain
         })
 
         print(f"DEBUG: Brian LLM generated response: {response_text[:50]}...")
@@ -188,6 +196,7 @@ def send_discord_message():
 
     message_content = data.get("message_content")
     channel_id = data.get("channel_id")
+    conversation_session_id = data.get("conversation_session_id", None) # New: Get session ID
 
     if not all([message_content, channel_id]):
         print(f"ERROR: Missing message_content or channel_id in /send_discord_message. Received: {data}")
@@ -195,8 +204,9 @@ def send_discord_message():
 
     # Schedule sending the message to Discord on the client's event loop
     try:
+        # Note: The Discord API itself doesn't use conversation_session_id, it's for our internal logging/orchestration
         client.loop.create_task(_send_discord_message_async(channel_id, message_content))
-        print(f"DEBUG: Brian's bot scheduled message to Discord for channel {channel_id}: {message_content[:50]}...")
+        print(f"DEBUG: Brian's bot scheduled message to Discord for channel {channel_id} (Session: {conversation_session_id}): {message_content[:50]}...")
         return jsonify({"status": "Message scheduled for Discord"}), 200
     except Exception as e:
         print(f"ERROR: Error scheduling Discord message send for Brian: {e}")
@@ -216,19 +226,36 @@ def initiate_conversation():
 
     conversation_starter_prompt = data.get("conversation_starter_prompt")
     channel_id = data.get("channel_id")
+    is_new_conversation = data.get("is_new_conversation", False) # New: Get the flag
+    conversation_session_id = data.get("conversation_session_id", None) # New: Get the session ID
 
     if not all([conversation_starter_prompt, channel_id]):
         print(f"ERROR: Missing conversation_starter_prompt or channel_id in /initiate_conversation. Received: {data}")
         return jsonify({"error": "Missing conversation_starter_prompt or channel_id"}), 500
 
-    print(f"DEBUG: Brian Bot - Received initiation request for channel {channel_id} with prompt: '{conversation_starter_prompt[:50]}...'")
+    print(f"DEBUG: Brian Bot - Received initiation request for channel {channel_id} (Session: {conversation_session_id}) with prompt: '{conversation_starter_prompt[:50]}...'")
 
     # Brian's bot will send this message directly to Discord
     # The orchestrator already generated the prompt, so Brian just sends it.
     try:
         client.loop.create_task(_send_discord_message_async(channel_id, conversation_starter_prompt))
-        print(f"DEBUG: Brian's bot scheduled initial conversation message to Discord for channel {channel_id}.")
-        return jsonify({"status": "Initial conversation message scheduled for Discord"}), 200
+        print(f"DEBUG: Brian's bot scheduled initial conversation message to Discord for channel {channel_id} (Session: {conversation_session_id}).")
+
+        # After sending the message, immediately inform the orchestrator to start the conversation loop
+        orchestrator_payload = {
+            "user_query": conversation_starter_prompt, # The starter acts as the initial "user query" from the bot
+            "channel_id": channel_id,
+            "initiator_bot_name": "Brian", # Brian is initiating this conversation
+            "initiator_mention": BRIAN_BOT_MENTION_STRING,
+            "human_user_display_name": None, # No human user initiated this specific turn, so pass None
+            "is_new_conversation": is_new_conversation, # Pass the flag
+            "conversation_session_id": conversation_session_id # Pass the session ID
+        }
+        # Call orchestrator in a non-blocking way
+        threading.Thread(target=lambda: requests.post(ORCHESTRATOR_API_URL, json=orchestrator_payload, timeout=60)).start()
+        print(f"DEBUG: Brian Bot - Informed orchestrator to start conversation loop for session {conversation_session_id}.")
+
+        return jsonify({"status": "Initial conversation message scheduled and orchestrator informed"}), 200
     except Exception as e:
         print(f"ERROR: Error scheduling initial conversation message for Brian: {e}")
         print(traceback.format_exc())
@@ -247,9 +274,9 @@ def run_flask_app():
         app.run(host='0.0.0.0', port=BRIAN_BOT_PORT, debug=False, use_reloader=False)
     except Exception as e:
         print(f"CRITICAL: Brian's Flask application failed to start or crashed unexpectedly: {e}")
+        print(f"Please check if port {BRIAN_BOT_PORT} is already in use or if firewall/antivirus is blocking access.")
         print(traceback.format_exc()) # Log full traceback
-        # Force exit if Flask app thread crashes to avoid zombie process
-        os._exit(1)
+        os._exit(1) # Force exit if Flask app thread crashes to avoid zombie process
 
 # --- Discord Bot Events ---
 @client.event
@@ -315,6 +342,8 @@ async def on_message(message):
     initiator_mention = ""
     should_initiate_orchestration = False
     human_user_display_name = None # Initialize to None
+    is_new_conversation = False # Default for human-initiated messages
+    conversation_session_id = None # Default for human-initiated messages, orchestrator will assign/retrieve
 
     # Determine if the message author is one of the other registered bots
     is_author_another_bot = (message.author.id == PETER_BOT_ID_INT) or \
@@ -380,7 +409,9 @@ async def on_message(message):
                 "channel_id": message.channel.id,
                 "initiator_bot_name": initiator_bot_name,
                 "initiator_mention": initiator_mention,
-                "human_user_display_name": human_user_display_name # Pass human user's display name to orchestrator
+                "human_user_display_name": human_user_display_name,
+                "is_new_conversation": is_new_conversation, # Pass the flag (will be False for human-init)
+                "conversation_session_id": conversation_session_id # Pass the ID (will be None for human-init)
             }
             # Increased timeout to 60 seconds
             post_to_orchestrator = functools.partial(
