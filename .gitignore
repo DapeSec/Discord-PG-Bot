@@ -1,3 +1,9 @@
 .venv/
 chroma_db/
 .env
+logs/
+*.log
+
+# Docker
+.docker/
+docker-compose.override.yml

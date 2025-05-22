@@ -1,0 +1,36 @@
+# Discord API wrapper
+discord.py==2.3.2
+
+# Environment variables
+python-dotenv==1.0.0
+
+# LangChain and related packages
+langchain==0.1.12
+langchain-community==0.0.10
+sentence-transformers==2.2.2
+
+# Vector store
+chromadb==0.4.22
+
+# Web framework and HTTP
+flask==3.0.0
+requests==2.31.0
+aiohttp==3.9.1
+
+# Database
+pymongo==4.6.1
+
+# Date handling
+python-dateutil==2.8.2
+
+# Web scraping and parsing
+beautifulsoup4==4.12.3
+
+# Other dependencies
+urllib3==2.2.1
+
+# Testing dependencies
+pytest==8.0.0
+pytest-asyncio==0.23.5
+pytest-cov==4.1.0
+pytest-mock==3.12.0 

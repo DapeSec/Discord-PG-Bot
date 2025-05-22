@@ -1,0 +1,105 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - bot_network
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.orchestrator
+    ports:
+      - "5003:5003"
+    volumes:
+      - ..:/app
+      - ../logs:/app/logs
+      - ../chroma_db:/app/chroma_db
+    env_file:
+      - ../.env
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+    networks:
+      - bot_network
+
+  peter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.bot
+    command: python peter_bot.py
+    ports:
+      - "5005:5005"
+    volumes:
+      - ..:/app
+      - ../logs:/app/logs
+      - ../chroma_db:/app/chroma_db
+    env_file:
+      - ../.env
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - orchestrator
+    networks:
+      - bot_network
+
+  brian:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.bot
+    command: python brian_bot.py
+    ports:
+      - "5002:5002"
+    volumes:
+      - ..:/app
+      - ../logs:/app/logs
+      - ../chroma_db:/app/chroma_db
+    env_file:
+      - ../.env
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - orchestrator
+    networks:
+      - bot_network
+
+  stewie:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.bot
+    command: python stewie_bot.py
+    ports:
+      - "5004:5004"
+    volumes:
+      - ..:/app
+      - ../logs:/app/logs
+      - ../chroma_db:/app/chroma_db
+    env_file:
+      - ../.env
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - orchestrator
+    networks:
+      - bot_network
+
+networks:
+  bot_network:
+    driver: bridge
+
+volumes:
+  mongodb_data: 
