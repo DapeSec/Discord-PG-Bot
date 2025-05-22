@@ -20,18 +20,36 @@ An interactive Discord bot system featuring Peter Griffin, Brian Griffin, and St
 graph TD
     subgraph Discord["Discord Platform"]
         DC[Discord Channels]
+        DAuth[Discord Auth]
     end
 
     subgraph Host["Host Machine"]
         OL[Ollama LLM<br>GPU Accelerated]
+        ML[Model Loading<br>& Caching]
     end
 
     subgraph Docker["Docker Environment"]
+        subgraph Security["Security Layer"]
+            Env[Environment<br>Variables]
+            Auth[Auth Service]
+            Keys[API Key<br>Management]
+        end
+
         subgraph Orchestrator["Orchestrator Container"]
             OS[Orchestrator Service<br>:5003]
-            Q[Message Queue]
-            RAG[RAG System]
-            VDB[(Chroma DB)]
+            
+            subgraph Queue["Message Queue System"]
+                Q[Main Queue]
+                DLQ[Dead Letter<br>Queue]
+                Retry[Retry<br>Mechanism]
+            end
+            
+            subgraph RAG["RAG System"]
+                Doc[Document<br>Processor]
+                Emb[Embedding<br>Generator]
+                Ret[Retrieval<br>Engine]
+                VDB[(Chroma DB)]
+            end
         end
 
         subgraph Bots["Bot Containers"]
@@ -40,30 +58,58 @@ graph TD
             SB[Stewie Bot<br>:5004]
         end
 
-        subgraph DB["Database"]
+        subgraph Storage["Storage Layer"]
             MDB[(MongoDB<br>:27017)]
+            Log[(Log Storage)]
+        end
+
+        subgraph Monitor["Monitoring"]
+            Met[Metrics<br>Collector]
+            Health[Health<br>Checks]
+            Alert[Alert<br>System]
         end
     end
 
-    DC <--> OS
-    OS <--> Q
-    OS <--> MDB
-    Q <--> PB
-    Q <--> BB
-    Q <--> SB
-    PB <--> RAG
-    BB <--> RAG
-    SB <--> RAG
-    RAG <--> VDB
-    RAG <--> OL
-    PB <--> OL
-    BB <--> OL
-    SB <--> OL
+    DC <--> DAuth
+    DAuth <--> Auth
+    Auth <--> OS
+    
+    OS --> Q
+    Q --> Retry
+    Retry --> Q
+    Q --> DLQ
+    
+    Q --> PB
+    Q --> BB
+    Q --> SB
+    
+    PB & BB & SB --> Doc
+    Doc --> Emb
+    Emb --> VDB
+    VDB --> Ret
+    Ret --> PB & BB & SB
+    
+    PB & BB & SB --> OL
+    OL --> ML
+    
+    OS --> MDB
+    PB & BB & SB --> Log
+    
+    OS & PB & BB & SB --> Met
+    Met --> Health
+    Health --> Alert
+    
+    Env --> OS & PB & BB & SB
+    Keys --> Auth
 
     style Discord fill:#7289DA,color:white
     style Docker fill:#4CAF50,color:white
     style Host fill:#FF9800,color:white
-    style DB fill:#2196F3,color:white
+    style Storage fill:#2196F3,color:white
+    style Security fill:#F44336,color:white
+    style Monitor fill:#9C27B0,color:white
+    style Queue fill:#795548,color:white
+    style RAG fill:#009688,color:white
 ```
 
 ## Project Structure
