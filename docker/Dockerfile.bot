@@ -1,5 +1,5 @@
-# Use Python 3.8 as base image
-FROM python:3.8-slim
+# Use Python 3.9 as base image
+FROM python:3.9-slim
 
 # Set working directory
 WORKDIR /app
@@ -11,13 +11,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
-COPY ../requirements.txt .
+COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy project files
-COPY .. .
+COPY . .
 
 # Create necessary directories
 RUN mkdir -p logs chroma_db
@@ -30,5 +30,5 @@ ENV PYTHONPATH=/app
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# The specific bot script will be specified in docker-compose.yml
-CMD ["python"] 
+# The specific bot module will be specified in docker-compose.yml
+CMD ["python", "-m", "src.app.bots"] 

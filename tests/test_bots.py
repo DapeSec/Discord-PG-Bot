@@ -15,7 +15,7 @@ class TestBots(unittest.TestCase):
     @patch('langchain_community.llms.Ollama')
     async def test_peter_bot_response(self, mock_ollama, mock_client):
         """Test Peter bot's response generation."""
-        from peter_bot import generate_peter_response
+        from src.app.bots.peter_bot import generate_peter_response
         
         # Mock LLM response
         mock_ollama.return_value.predict.return_value = "Hehehe, that's funny!"
@@ -34,7 +34,7 @@ class TestBots(unittest.TestCase):
     @patch('langchain_community.llms.Ollama')
     async def test_brian_bot_response(self, mock_ollama, mock_client):
         """Test Brian bot's response generation."""
-        from brian_bot import generate_brian_response
+        from src.app.bots.brian_bot import generate_brian_response
         
         # Mock LLM response
         mock_ollama.return_value.predict.return_value = "Well, actually..."
@@ -53,7 +53,7 @@ class TestBots(unittest.TestCase):
     @patch('langchain_community.llms.Ollama')
     async def test_stewie_bot_response(self, mock_ollama, mock_client):
         """Test Stewie bot's response generation."""
-        from stewie_bot import generate_stewie_response
+        from src.app.bots.stewie_bot import generate_stewie_response
         
         # Mock LLM response
         mock_ollama.return_value.predict.return_value = "Victory shall be mine!"

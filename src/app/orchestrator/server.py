@@ -15,13 +15,36 @@ from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.schema import HumanMessage, AIMessage
 import uuid
 
+print("Starting imports...")
+
+try:
+    print("Importing sentence-transformers...")
+    from langchain_community.embeddings import SentenceTransformerEmbeddings
+    print("Successfully imported SentenceTransformerEmbeddings")
+except Exception as e:
+    print(f"Error importing SentenceTransformerEmbeddings: {e}")
+    print("Python path:", os.environ.get('PYTHONPATH'))
+    print("Installed packages:")
+    import pkg_resources
+    for package in pkg_resources.working_set:
+        print(f"{package.key} == {package.version}")
+    raise
+
+try:
+    print("Importing Chroma...")
+    from langchain_community.vectorstores import Chroma
+    print("Successfully imported Chroma")
+except Exception as e:
+    print(f"Error importing Chroma: {e}")
+    raise
+
 # RAG specific imports
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import SentenceTransformerEmbeddings
-from langchain_community.vectorstores import Chroma
+
+print("All imports completed successfully")
 
 # Load environment variables from a .env file
 load_dotenv()
@@ -29,31 +52,58 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- MongoDB Configuration ---
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://admin:adminpassword@mongodb:27017/?authSource=admin")
 DB_NAME = os.getenv("MONGO_DB_NAME", "discord_bot_conversations")
-COLLECTION_NAME = os.getenv("MONGO_COLLECTION_NAME", "conversations")
+CONVERSATIONS_COLLECTION_NAME = os.getenv("MONGO_COLLECTION_NAME", "conversations")
+CRAWL_STATUS_COLLECTION_NAME = "crawl_status" # New collection for tracking crawl status
 
 mongo_client = None
 db = None
 conversations_collection = None
+crawl_status_collection = None # New global for crawl status collection
 
-def connect_to_mongodb():
-    """Establishes connection to MongoDB."""
-    global mongo_client, db, conversations_collection
-    try:
-        mongo_client = MongoClient(MONGO_URI)
-        mongo_client.admin.command('ping')
-        db = mongo_client[DB_NAME]
-        conversations_collection = db[COLLECTION_NAME]
-        print("Successfully connected to MongoDB!")
-    except ConnectionFailure as e:
-        print(f"MongoDB connection failed: {e}")
-        print("Please ensure MongoDB is running and accessible at the specified URI.")
-        os._exit(1)
-    except Exception as e:
-        print(f"An unexpected error occurred during MongoDB connection: {e}")
-        print(traceback.format_exc())
-        os._exit(1)
+def connect_to_mongodb(max_retries=5, initial_delay=1):
+    """Establishes connection to MongoDB with retry mechanism."""
+    global mongo_client, db, conversations_collection, crawl_status_collection
+    
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            if mongo_client:
+                try:
+                    mongo_client.close()
+                except:
+                    pass
+            
+            print(f"Attempting to connect to MongoDB (attempt {retry_count + 1}/{max_retries})...")
+            mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+            # Test the connection
+            mongo_client.admin.command('ping')
+            
+            db = mongo_client[DB_NAME]
+            conversations_collection = db[CONVERSATIONS_COLLECTION_NAME]
+            crawl_status_collection = db[CRAWL_STATUS_COLLECTION_NAME]
+            
+            print("Successfully connected to MongoDB!")
+            return True
+            
+        except ConnectionFailure as e:
+            retry_count += 1
+            if retry_count == max_retries:
+                print(f"MongoDB connection failed after {max_retries} attempts: {e}")
+                print("Please ensure MongoDB is running and accessible at the specified URI.")
+                return False
+            
+            wait_time = initial_delay * (2 ** (retry_count - 1))  # Exponential backoff
+            print(f"Connection attempt failed. Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
+            
+        except Exception as e:
+            print(f"An unexpected error occurred during MongoDB connection: {e}")
+            print(traceback.format_exc())
+            return False
+    
+    return False
 
 # --- Orchestrator Configuration ---
 ORCHESTRATOR_PORT = 5003
@@ -84,6 +134,9 @@ FANDOM_WIKI_START_URL = os.getenv("FANDOM_WIKI_START_URL", "https://familyguy.fa
 FANDOM_WIKI_MAX_PAGES = os.getenv("FANDOM_WIKI_MAX_PAGES", "100")
 FANDOM_WIKI_CRAWL_DELAY = os.getenv("FANDOM_WIKI_CRAWL_DELAY", "1")
 DEFAULT_DISCORD_CHANNEL_ID = os.getenv("DEFAULT_DISCORD_CHANNEL_ID")
+
+# Orchestrator's own API URL for internal calls
+ORCHESTRATOR_API_URL = f"http://localhost:{ORCHESTRATOR_PORT}/orchestrate"
 
 
 if not all([PETER_BOT_LLM_API_URL, PETER_BOT_DISCORD_SEND_API_URL, PETER_BOT_INITIATE_API_URL,
@@ -614,19 +667,17 @@ def orchestrate_conversation():
         print(f"Critical Error in /orchestrate: {error_msg}\n{traceback.format_exc()}")
         return jsonify({"error": error_msg}), 500
 
-# Global to track last crawl time
-last_crawl_timestamp = None
+# Global to track last crawl time (will be loaded from MongoDB)
+# last_crawl_timestamp = None # No longer needed as a simple global, loaded from DB
 
 def schedule_daily_conversations():
     """
-    Schedules and initiates random conversations throughout the day, and triggers a daily RAG crawl.
+    Schedules and initiates random conversations throughout the day, and triggers a weekly RAG crawl.
     This function runs in a separate thread.
     """
-    global last_crawl_timestamp
-    # Explicitly declare global variables used from the module scope
-    global FANDOM_WIKI_START_URL, FANDOM_WIKI_MAX_PAGES, FANDOM_WIKI_CRAWL_DELAY, DEFAULT_DISCORD_CHANNEL_ID, ORCHESTRATOR_API_URL, BOT_CONFIGS, INITIAL_CONVERSATION_PROMPTS, starter_generation_chain, conversations_collection
+    global FANDOM_WIKI_START_URL, FANDOM_WIKI_MAX_PAGES, FANDOM_WIKI_CRAWL_DELAY, DEFAULT_DISCORD_CHANNEL_ID, ORCHESTRATOR_API_URL, BOT_CONFIGS, INITIAL_CONVERSATION_PROMPTS, starter_generation_chain, conversations_collection, crawl_status_collection
 
-    print(f"Scheduler: Starting daily conversation scheduling thread. Will initiate {NUM_DAILY_RANDOM_CONVERSATIONS} conversations per day and a daily RAG crawl.")
+    print(f"Scheduler: Starting daily conversation scheduling thread. Will initiate {NUM_DAILY_RANDOM_CONVERSATIONS} conversations per day and a weekly RAG crawl.")
     
     # Define crawl parameters from environment variables
     start_url = FANDOM_WIKI_START_URL
@@ -636,19 +687,27 @@ def schedule_daily_conversations():
     while True:
         now = datetime.now()
 
-        # Check if a crawl is needed for the current calendar day
-        if last_crawl_timestamp is None or last_crawl_timestamp.date() < now.date():
-            print(f"Scheduler: Initiating daily RAG crawl for {now.date()} at {now.strftime('%H:%M:%S')}")
+        # --- Check and perform weekly RAG crawl ---
+        last_crawl_record = crawl_status_collection.find_one({"_id": "last_crawl_timestamp"})
+        last_crawl_timestamp = last_crawl_record.get("timestamp") if last_crawl_record else None
+
+        if last_crawl_timestamp is None or (now - last_crawl_timestamp).days >= 7:
+            print(f"Scheduler: Initiating weekly RAG crawl for {now.date()} at {now.strftime('%H:%M:%S')}")
             crawl_thread = threading.Thread(target=crawl_and_process_documents, args=(start_url, max_pages, delay), daemon=True)
             crawl_thread.start()
             crawl_thread.join() # Wait for the crawl to complete
-            last_crawl_timestamp = now
-            print(f"Scheduler: RAG crawl completed. Initiating first conversation of the day.")
+            
+            # Update last crawl timestamp in MongoDB
+            crawl_status_collection.update_one(
+                {"_id": "last_crawl_timestamp"},
+                {"$set": {"timestamp": now}},
+                upsert=True
+            )
+            print(f"Scheduler: RAG crawl completed and timestamp updated in MongoDB. Initiating first conversation of the week.")
 
             # Initiate the very first conversation immediately after crawl
             initiator_bot_name = random.choice(list(BOT_CONFIGS.keys()))
             initiator_bot_config = BOT_CONFIGS[initiator_bot_name]
-            initiator_api_url = initiator_bot_config["initiate_api"]
             
             conversation_starter_prompt = ""
             if not DEFAULT_DISCORD_CHANNEL_ID:
@@ -712,7 +771,9 @@ def schedule_daily_conversations():
             num_remaining_conversations = NUM_DAILY_RANDOM_CONVERSATIONS - 1
             start_scheduling_from = datetime.now() # Start scheduling remaining from now
         else:
-            print(f"Scheduler: RAG crawl already performed for {now.date()}. Skipping crawl.")
+            # If crawl was skipped, inform about next crawl
+            days_until_next_crawl = 7 - (now - last_crawl_timestamp).days
+            print(f"Scheduler: RAG crawl not needed yet. Next crawl in approximately {days_until_next_crawl} days. Skipping crawl for now.")
             num_remaining_conversations = NUM_DAILY_RANDOM_CONVERSATIONS # All conversations are "remaining"
             start_scheduling_from = now # Start scheduling from now
 
@@ -746,7 +807,6 @@ def schedule_daily_conversations():
                 if (datetime.now() - now).total_seconds() < (24 * 3600):
                     initiator_bot_name = random.choice(list(BOT_CONFIGS.keys()))
                     initiator_bot_config = BOT_CONFIGS[initiator_bot_name]
-                    initiator_api_url = initiator_bot_config["initiate_api"]
                     
                     conversation_starter_prompt = ""
                     if not DEFAULT_DISCORD_CHANNEL_ID:
@@ -835,19 +895,31 @@ def run_flask_app():
         os._exit(1)
 
 if __name__ == '__main__':
-    connect_to_mongodb()
-    get_embeddings_model() # Initialize embeddings model on startup
-    initialize_vector_store() # Initialize or load vector store on startup
+    # Try to connect to MongoDB with retries
+    max_retries = 5
+    initial_delay = 1
     
-    threading.Thread(target=run_flask_app, daemon=True).start()
-    print("Orchestrator server thread started. Waiting for requests...")
-
-    threading.Thread(target=schedule_daily_conversations, daemon=True).start()
-    print("Daily conversation scheduler thread started.")
-
+    print("Starting orchestrator initialization...")
+    
+    while True:
+        if connect_to_mongodb(max_retries=max_retries, initial_delay=initial_delay):
+            break
+        print("Initial MongoDB connection attempts failed. Waiting 10 seconds before trying again...")
+        time.sleep(10)
+    
     try:
+        get_embeddings_model() # Initialize embeddings model on startup
+        initialize_vector_store() # Initialize or load vector store on startup
+        
+        threading.Thread(target=run_flask_app, daemon=True).start()
+        print("Orchestrator server thread started. Waiting for requests...")
+
+        threading.Thread(target=schedule_daily_conversations, daemon=True).start()
+        print("Daily conversation scheduler thread started.")
+
         while True:
             time.sleep(1)
+            
     except KeyboardInterrupt:
         print("Orchestrator server and scheduler stopped by user (Ctrl+C).")
     except Exception as e:

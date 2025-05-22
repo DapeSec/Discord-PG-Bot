@@ -1,5 +1,5 @@
-# Use Python 3.8 as base image
-FROM python:3.8-slim
+# Use PyTorch base image
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 
 # Set working directory
 WORKDIR /app
@@ -8,16 +8,21 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
+    git \
+    python3-dev \
+    gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
-COPY ../requirements.txt .
+COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies with verbose output
+RUN pip install --verbose --no-cache-dir -r requirements.txt && \
+    pip list | grep -E "torch|transformers|sentence-transformers"
 
 # Copy project files
-COPY .. .
+COPY . .
 
 # Create necessary directories
 RUN mkdir -p logs chroma_db
@@ -34,4 +39,5 @@ RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Command to run the orchestrator
-CMD ["python", "orchestrator_server.py"] 
+CMD ["python", "-m", "src.app.orchestrator.server"]
+# CMD ["python", "-c", "import sys; print('Python sys.path:'); print(sys.path); import sentence_transformers; print('sentence_transformers imported successfully')"] 

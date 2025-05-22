@@ -8,7 +8,7 @@ from pymongo import MongoClient
 class TestOrchestrator(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
-        from orchestrator_server import app
+        from src.app.orchestrator.server import app
         self.app = app.test_client()
         self.mock_mongo = Mock(spec=MongoClient)
         
@@ -70,7 +70,7 @@ class TestOrchestrator(unittest.TestCase):
                                content_type='application/json')
         self.assertEqual(response.status_code, 400)
         
-    @patch('orchestrator_server.process_rag_context')
+    @patch('src.app.orchestrator.server.process_rag_context')
     def test_rag_integration(self, mock_rag):
         """Test RAG system integration."""
         # Mock RAG response

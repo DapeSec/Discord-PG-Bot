@@ -7,6 +7,11 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=adminpassword
+      - MONGO_INITDB_DATABASE=discord_bot_conversations
+    command: mongod --auth --bind_ip_all
     networks:
       - bot_network
 
@@ -24,6 +29,9 @@ services:
       - ../.env
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
+      - MONGO_DB_NAME=discord_bot_conversations
+      - MONGO_COLLECTION_NAME=conversations
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -35,7 +43,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bot
-    command: python peter_bot.py
+    command: python -m src.app.bots.peter_bot
     ports:
       - "5005:5005"
     volumes:
@@ -46,6 +54,7 @@ services:
       - ../.env
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -57,7 +66,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bot
-    command: python brian_bot.py
+    command: python -m src.app.bots.brian_bot
     ports:
       - "5002:5002"
     volumes:
@@ -68,6 +77,7 @@ services:
       - ../.env
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -79,7 +89,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bot
-    command: python stewie_bot.py
+    command: python -m src.app.bots.stewie_bot
     ports:
       - "5004:5004"
     volumes:
@@ -90,6 +100,7 @@ services:
       - ../.env
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
