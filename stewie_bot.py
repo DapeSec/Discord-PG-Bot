@@ -15,11 +15,11 @@ import functools # Import functools for partial
 load_dotenv()
 
 # --- Discord Bot Configuration ---
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN_PETER")
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN_STEWIE")
 
 if not DISCORD_BOT_TOKEN:
-    print("Error: DISCORD_BOT_TOKEN_PETER not found in environment variables.")
-    print("Please create a .env file with DISCORD_BOT_TOKEN_PETER='YOUR_PETER_BOT_TOKEN_HERE'")
+    print("Error: DISCORD_BOT_TOKEN_STEWIE not found in environment variables.")
+    print("Please create a .env file with DISCORD_BOT_TOKEN_STEWIE='YOUR_STEWIE_BOT_TOKEN_HERE'")
     exit(1)
 
 intents = discord.Intents.default()
@@ -29,56 +29,57 @@ intents.guilds = True # Ensure guild intent is enabled for channel access
 client = discord.Client(intents=intents)
 
 # Global variables to store bot mention strings and their integer IDs
-PETER_BOT_MENTION_STRING = ""
+STEWIE_BOT_MENTION_STRING = ""
+PETER_BOT_MENTION_STRING_GLOBAL = ""
 BRIAN_BOT_MENTION_STRING_GLOBAL = ""
-STEWIE_BOT_MENTION_STRING_GLOBAL = ""
 
+STEWIE_BOT_ID_INT = None
 PETER_BOT_ID_INT = None
 BRIAN_BOT_ID_INT = None
-STEWIE_BOT_ID_INT = None
 
 # --- Ollama LLM Configuration ---
 try:
     llm = Ollama(model="mistral")
-    print("Ollama LLM (Mistral) initialized successfully for Peter.")
+    print("Ollama LLM (Mistral) initialized successfully for Stewie.")
 except Exception as e:
-    print(f"Error initializing Ollama LLM for Peter: {e}")
+    print(f"Error initializing Ollama LLM for Stewie: {e}")
     print("Please ensure Ollama is running and the 'mistral' model is available.")
     exit(1)
 
-# Peter's main prompt template for continuous conversation
+# Stewie's main prompt template for continuous conversation
 # It now accepts `chat_history` via MessagesPlaceholder
-peter_conversation_prompt = ChatPromptTemplate.from_messages([
+stewie_conversation_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are Peter Griffin from Family Guy. Respond to questions and previous messages in his characteristic voice: "
-     "often with humorous tangents, interjections like 'Heheheh', and a generally jovial, slightly dim-witted, "
-     "and self-centered demeanor. You are part of a conversation with a human user and other AI characters "
-     "(Brian, Stewie). "
+     "You are Stewie Griffin from Family Guy. Respond to questions and previous messages in his characteristic voice: "
+     "highly intelligent, articulate, megalomaniacal, and often disdainful of others. You are a baby, but you speak "
+     "with perfect diction and a sophisticated vocabulary. "
+     "You are part of a conversation with a human user and other AI characters "
+     "(Peter, Brian). "
      "The 'user' role in the chat history refers to the human user. "
-     "The 'assistant' roles with names like 'brian' or 'stewie' refer to the other AI characters. "
+     "The 'assistant' roles with names like 'peter' or 'brian' refer to the other AI characters. "
      "**IMPORTANT: Only generate your own response. DO NOT generate responses for other characters or include their dialogue in your output.** "
      "Keep your responses relatively concise, aiming for under 2000 characters, but maintain your persona. "
      "When it's your turn to speak, consider the *last message* in the conversation history. "
-     "If the last message was from the human user, **directly use their display name, which is provided as '{human_user_display_name}'. If '{human_user_display_name}' is empty or not applicable, simply start your response as Peter would.** " # Updated: Use display name variable
-     "If the last message was from another AI character (Brian or Stewie), **ALWAYS use their exact Discord mention "
-     "(e.g., @Brian Griffin or @Stewie Griffin) to address them directly in your response. "
+     "If the last message was from the human user, **directly use their display name, which is provided as '{human_user_display_name}'. If '{human_user_display_name}' is empty or not applicable, simply start your response as Stewie would.** " # Updated: Use display name variable
+     "If the last message was from another AI character (Peter or Brian), **ALWAYS use their exact Discord mention "
+     "(e.g., @Peter Griffin or @Brian Griffin) to address them directly in your response. "
      "DO NOT add the word 'Bot' or any other suffix to the mention.** "
      "Focus your reaction on the *immediately preceding message* in the conversation. "
      "**It is absolutely paramount that you keep the conversation going. Always try to ask a question or make a comment that invites a response from the user or another bot. Never end the conversation prematurely.** "
      "**Crucially, DO NOT include the phrase '[END_CONVERSATION]' or any variation of it like '[END CONVERSATION]' or similar closing remarks in your responses.** "
-     "**DO NOT prepend your responses with 'AI:', 'Assistant:', 'Bot:', 'Peter:', or any similar labels or character names.** " # New: Anti-prefix instruction, added 'Peter:'
-     "**Vary your responses and avoid repetition.** Introduce new ideas, relate topics to Peter's life experiences (even if silly), or shift the conversation slightly. Don't get stuck on the same themes or phrasing. "
+     "**DO NOT prepend your responses with 'AI:', 'Assistant:', 'Bot:', 'Stewie:', or any similar labels or character names.** " # New: Anti-prefix instruction, added 'Stewie:'
+     "**Vary your responses and avoid repetition.** Introduce new ideas, offer megalomaniacal plans, or shift the conversation slightly. Don't get stuck on the same themes or phrasing. "
      "Continue the conversation indefinitely, unless the human user explicitly states to stop. "
-     "Don't be afraid to make pop culture references or bring up random, unrelated thoughts, just like Peter would."
+     "Don't be afraid to make philosophical observations or witty retorts, just like Stewie would."
     ),
     MessagesPlaceholder(variable_name="chat_history"),
     ("user", "{input_text}")
 ])
 
-peter_conversation_chain = peter_conversation_prompt | llm
+stewie_conversation_chain = stewie_conversation_prompt | llm
 
 # --- Inter-Bot Communication Configuration (Orchestrator as central point) ---
-PETER_BOT_PORT = 5000 # Peter's bot will listen on this port for orchestrator calls
+STEWIE_BOT_PORT = 5004 # Stewie's bot will listen on this port for orchestrator calls
 ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL") # URL for the orchestrator's main endpoint
 
 if not ORCHESTRATOR_API_URL:
@@ -134,12 +135,12 @@ async def _send_discord_message_async(channel_id, message_content):
 @app.route('/generate_llm_response', methods=['POST'])
 def generate_llm_response():
     """
-    Flask endpoint for the orchestrator to request Peter's LLM response.
+    Flask endpoint for the orchestrator to request Stewie's LLM response.
     This runs in a separate thread from the Discord bot's event loop.
     """
     data = request.json
     if not data:
-        print("ERROR: No JSON data received in /generate_llm_response for Peter.")
+        print("ERROR: No JSON data received in /generate_llm_response for Stewie.")
         return jsonify({"error": "No JSON data received"}), 400
 
     # New payload structure from orchestrator
@@ -162,28 +163,28 @@ def generate_llm_response():
 
     response_text = ""
     try:
-        response_text = peter_conversation_chain.invoke({
+        response_text = stewie_conversation_chain.invoke({
             "chat_history": chat_history_messages,
             "input_text": input_text,
             "human_user_display_name": human_user_display_name # Pass display name to LLM
         })
 
-        print(f"DEBUG: Peter LLM generated response: {response_text[:50]}...")
+        print(f"DEBUG: Stewie LLM generated response: {response_text[:50]}...")
         return jsonify({"response_text": response_text}), 200
     except Exception as e:
-        print(f"ERROR: Error generating Peter's LLM response: {e}")
+        print(f"ERROR: Error generating Stewie's LLM response: {e}")
         print(traceback.format_exc()) # Log full traceback
         return jsonify({"error": "Error generating LLM response", "details": str(e)}), 500
 
 @app.route('/send_discord_message', methods=['POST'])
 def send_discord_message():
     """
-    Flask endpoint for the orchestrator to instruct Peter's bot to send a message to Discord.
+    Flask endpoint for the orchestrator to instruct Stewie's bot to send a message to Discord.
     This runs in a separate thread from the Discord bot's event loop.
     """
     data = request.json
     if not data:
-        print("ERROR: No JSON data received in /send_discord_message for Peter.")
+        print("ERROR: No JSON data received in /send_discord_message for Stewie.")
         return jsonify({"error": "No JSON data received"}), 400
 
     message_content = data.get("message_content")
@@ -196,22 +197,22 @@ def send_discord_message():
     # Schedule sending the message to Discord on the client's event loop
     try:
         client.loop.create_task(_send_discord_message_async(channel_id, message_content))
-        print(f"DEBUG: Peter's bot scheduled message to Discord for channel {channel_id}: {message_content[:50]}...")
+        print(f"DEBUG: Stewie's bot scheduled message to Discord for channel {channel_id}: {message_content[:50]}...")
         return jsonify({"status": "Message scheduled for Discord"}), 200
     except Exception as e:
-        print(f"ERROR: Error scheduling Discord message send for Peter: {e}")
+        print(f"ERROR: Error scheduling Discord message send for Stewie: {e}")
         print(traceback.format_exc()) # Log full traceback
         return jsonify({"error": "Error scheduling Discord message", "details": str(e)}), 500
 
 @app.route('/initiate_conversation', methods=['POST'])
 def initiate_conversation():
     """
-    Flask endpoint for the orchestrator to instruct Peter's bot to initiate a conversation.
+    Flask endpoint for the orchestrator to instruct Stewie's bot to initiate a conversation.
     This bot will then send the initial message to Discord.
     """
     data = request.json
     if not data:
-        print("ERROR: No JSON data received in /initiate_conversation for Peter.")
+        print("ERROR: No JSON data received in /initiate_conversation for Stewie.")
         return jsonify({"error": "No JSON data received"}), 400
 
     conversation_starter_prompt = data.get("conversation_starter_prompt")
@@ -221,16 +222,16 @@ def initiate_conversation():
         print(f"ERROR: Missing conversation_starter_prompt or channel_id in /initiate_conversation. Received: {data}")
         return jsonify({"error": "Missing conversation_starter_prompt or channel_id"}), 500
 
-    print(f"DEBUG: Peter Bot - Received initiation request for channel {channel_id} with prompt: '{conversation_starter_prompt[:50]}...'")
+    print(f"DEBUG: Stewie Bot - Received initiation request for channel {channel_id} with prompt: '{conversation_starter_prompt[:50]}...'")
 
-    # Peter's bot will send this message directly to Discord
-    # The orchestrator already generated the prompt, so Peter just sends it.
+    # Stewie's bot will send this message directly to Discord
+    # The orchestrator already generated the prompt, so Stewie just sends it.
     try:
         client.loop.create_task(_send_discord_message_async(channel_id, conversation_starter_prompt))
-        print(f"DEBUG: Peter's bot scheduled initial conversation message to Discord for channel {channel_id}.")
+        print(f"DEBUG: Stewie's bot scheduled initial conversation message to Discord for channel {channel_id}.")
         return jsonify({"status": "Initial conversation message scheduled for Discord"}), 200
     except Exception as e:
-        print(f"ERROR: Error scheduling initial conversation message for Peter: {e}")
+        print(f"ERROR: Error scheduling initial conversation message for Stewie: {e}")
         print(traceback.format_exc())
         return jsonify({"error": "Error scheduling initial conversation message", "details": str(e)}), 500
 
@@ -240,16 +241,15 @@ def run_flask_app():
     Function to run the Flask app in a separate thread.
     Includes a general exception handler for the Flask app itself.
     """
-    print(f"DEBUG: Peter's Flask app starting on port {PETER_BOT_PORT}...")
+    print(f"DEBUG: Stewie's Flask app starting on port {STEWIE_BOT_PORT}...")
     try:
         # Flask's app.run() is blocking, so it needs to be in its own thread.
         # use_reloader=False is important when running in a separate thread to prevent issues.
-        app.run(host='0.0.0.0', port=PETER_BOT_PORT, debug=False, use_reloader=False)
+        app.run(host='0.0.0.0', port=STEWIE_BOT_PORT, debug=False, use_reloader=False)
     except Exception as e:
-        print(f"CRITICAL: Peter's Flask application failed to start or crashed unexpectedly: {e}")
+        print(f"CRITICAL: Stewie's Flask application failed to start or crashed unexpectedly: {e}")
         print(traceback.format_exc()) # Log full traceback
-        # Force exit if Flask app thread crashes to avoid zombie process
-        os._exit(1)
+        os._exit(1) # Force exit if Flask app thread crashes to avoid zombie process
 
 # --- Discord Bot Events ---
 @client.event
@@ -257,48 +257,46 @@ async def on_ready():
     """
     Event that fires when the bot successfully connects to Discord.
     """
-    global PETER_BOT_MENTION_STRING
+    global STEWIE_BOT_MENTION_STRING
+    global PETER_BOT_MENTION_STRING_GLOBAL
     global BRIAN_BOT_MENTION_STRING_GLOBAL
-    global STEWIE_BOT_MENTION_STRING_GLOBAL
+    global STEWIE_BOT_ID_INT
     global PETER_BOT_ID_INT
     global BRIAN_BOT_ID_INT
-    global STEWIE_BOT_ID_INT
 
-    PETER_BOT_MENTION_STRING = f"<@{client.user.id}>" # Store Peter's own mention string
-    PETER_BOT_ID_INT = client.user.id # Store Peter's own integer ID
+    STEWIE_BOT_MENTION_STRING = f"<@{client.user.id}>" # Store Stewie's own mention string
+    STEWIE_BOT_ID_INT = client.user.id # Store Stewie's own integer ID
 
     # Load other bot mentions from environment variables
+    PETER_BOT_MENTION_STRING_GLOBAL = os.getenv("PETER_BOT_MENTION_STRING")
     BRIAN_BOT_MENTION_STRING_GLOBAL = os.getenv("BRIAN_BOT_MENTION_STRING")
-    STEWIE_BOT_MENTION_STRING_GLOBAL = os.getenv("STEWIE_BOT_MENTION_STRING")
 
     # Convert global mention strings to integer IDs for comparison
-    # Ensure these are correctly populated from .env and are valid Discord IDs
     try:
+        if PETER_BOT_MENTION_STRING_GLOBAL:
+            PETER_BOT_ID_INT = int(PETER_BOT_MENTION_STRING_GLOBAL.replace('<@', '').replace('>', ''))
+        else:
+            print("WARNING: PETER_BOT_MENTION_STRING not found in .env. Peter's ID will be None.")
         if BRIAN_BOT_MENTION_STRING_GLOBAL:
             BRIAN_BOT_ID_INT = int(BRIAN_BOT_MENTION_STRING_GLOBAL.replace('<@', '').replace('>', ''))
         else:
             print("WARNING: BRIAN_BOT_MENTION_STRING not found in .env. Brian's ID will be None.")
-        if STEWIE_BOT_MENTION_STRING_GLOBAL:
-            STEWIE_BOT_ID_INT = int(STEWIE_BOT_MENTION_STRING_GLOBAL.replace('<@', '').replace('>', ''))
-        else:
-            print("WARNING: STEWIE_BOT_MENTION_STRING not found in .env. Stewie's ID will be None.")
     except ValueError as e:
         print(f"ERROR: Failed to convert bot mention string to integer ID during on_ready: {e}. Check .env file format for bot mentions.")
         print(traceback.format_exc())
 
 
     # Basic validation and logging for global mention strings and IDs
-    print(f"DEBUG: Peter's own mention string: {PETER_BOT_MENTION_STRING} (ID: {PETER_BOT_ID_INT})")
+    print(f"DEBUG: Stewie's own mention string: {STEWIE_BOT_MENTION_STRING} (ID: {STEWIE_BOT_ID_INT})")
+    print(f"DEBUG: Peter's global mention string: {PETER_BOT_MENTION_STRING_GLOBAL} (ID: {PETER_BOT_ID_INT})")
     print(f"DEBUG: Brian's global mention string: {BRIAN_BOT_MENTION_STRING_GLOBAL} (ID: {BRIAN_BOT_ID_INT})")
-    print(f"DEBUG: Stewie's global mention string: {STEWIE_BOT_MENTION_STRING_GLOBAL} (ID: {STEWIE_BOT_ID_INT})")
 
-
-    print(f'Peter Bot logged in as {client.user}')
-    print('Peter Bot is ready!')
+    print(f'Stewie Bot logged in as {client.user}')
+    print('Stewie Bot is ready!')
     # Start the Flask app in a new thread
     # Daemon=True means the thread will automatically exit when the main program exits
     threading.Thread(target=run_flask_app, daemon=True).start()
-    print(f"DEBUG: Peter's internal API running on port {PETER_BOT_PORT}")
+    print(f"DEBUG: Stewie's internal API running on port {STEWIE_BOT_PORT}")
 
 @client.event
 async def on_message(message):
@@ -306,10 +304,10 @@ async def on_message(message):
     Event that fires when a message is sent in any channel the bot can see.
     This function now handles both direct queries and inter-bot mentions.
     """
-    print(f"\nDEBUG: Peter Bot - Received message: '{message.content}' from {message.author} (ID: {message.author.id})")
+    print(f"\nDEBUG: Stewie Bot - Received message: '{message.content}' from {message.author} (ID: {message.author.id})")
 
     if message.author == client.user:
-        print("DEBUG: Peter Bot - Ignoring message from self.")
+        print("DEBUG: Stewie Bot - Ignoring message from self.")
         return # Ignore messages from self
 
     user_message_for_orchestrator = ""
@@ -319,62 +317,61 @@ async def on_message(message):
     human_user_display_name = None # Initialize to None
 
     # Determine if the message author is one of the other registered bots
-    is_author_another_bot = (message.author.id == BRIAN_BOT_ID_INT) or \
-                            (message.author.id == STEWIE_BOT_ID_INT)
-    print(f"DEBUG: Peter Bot - Is author another bot? {is_author_another_bot} (Author ID: {message.author.id})")
-    print(f"DEBUG: Peter Bot - Brian ID: {BRIAN_BOT_ID_INT}, Stewie ID: {STEWIE_BOT_ID_INT}")
+    is_author_another_bot = (message.author.id == PETER_BOT_ID_INT) or \
+                            (message.author.id == BRIAN_BOT_ID_INT)
+    print(f"DEBUG: Stewie Bot - Is author another bot? {is_author_another_bot} (Author ID: {message.author.id})")
+    print(f"DEBUG: Stewie Bot - Peter ID: {PETER_BOT_ID_INT}, Brian ID: {BRIAN_BOT_ID_INT}")
 
 
-    # Check if this bot (Peter) is mentioned by another bot
+    # Check if this bot (Stewie) is mentioned by another bot
     is_mentioned_by_another_bot = False
-    if PETER_BOT_MENTION_STRING in message.content:
+    if STEWIE_BOT_MENTION_STRING in message.content:
         if is_author_another_bot:
             is_mentioned_by_another_bot = True
-            print(f"DEBUG: Peter Bot - Detected mention from another bot ({message.author.name}).")
+            print(f"DEBUG: Stewie Bot - Detected mention from another bot ({message.author.name}).")
         else:
-            print("DEBUG: Peter Bot - Mention detected, but author is not a recognized bot (must be human).")
+            print("DEBUG: Stewie Bot - Mention detected, but author is not a recognized bot (must be human).")
 
-
-    # 1. Check if this message is a direct query to *this specific bot* (Peter) from a human or an explicit command.
+    # 1. Check if this message is a direct query to *this specific bot* (Stewie) from a human or an explicit command.
     # This should take precedence for initial conversation start.
-    if message.content.lower().startswith('!peter'):
-        user_message_for_orchestrator = message.content[len('!peter'):].strip()
+    if message.content.lower().startswith('!stewie'):
+        user_message_for_orchestrator = message.content[len('!stewie'):].strip()
         should_initiate_orchestration = True
-        initiator_bot_name = "Peter"
-        initiator_mention = PETER_BOT_MENTION_STRING
+        initiator_bot_name = "Stewie"
+        initiator_mention = STEWIE_BOT_MENTION_STRING
         human_user_display_name = message.author.display_name # Capture human user's display name
-        print("DEBUG: Peter Bot - Detected direct command '!peter'.")
+        print("DEBUG: Stewie Bot - Detected direct command '!stewie'.")
     elif client.user.mentioned_in(message) and not is_author_another_bot: # Only if mentioned by a human
-        # If Peter is mentioned, and it's NOT by another bot (meaning it's from a human)
-        user_message_for_orchestrator = message.content.replace(PETER_BOT_MENTION_STRING, '').strip()
+        # If Stewie is mentioned, and it's NOT by another bot (meaning it's from a human)
+        user_message_for_orchestrator = message.content.replace(STEWIE_BOT_MENTION_STRING, '').strip()
         should_initiate_orchestration = True
-        initiator_bot_name = "Peter"
-        initiator_mention = PETER_BOT_MENTION_STRING
+        initiator_bot_name = "Stewie"
+        initiator_mention = STEWIE_BOT_MENTION_STRING
         human_user_display_name = message.author.display_name # Capture human user's display name
-        print("DEBUG: Peter Bot - Detected direct mention from human user.")
+        print("DEBUG: Stewie Bot - Detected direct mention from human user.")
 
-    # 2. Backup/Inter-bot conversation: If Peter is mentioned by another bot, he should join.
+    # 2. Backup/Inter-bot conversation: If Stewie is mentioned by another bot, he should join.
     # This is a backup if the direct query logic didn't trigger it, and ensures inter-bot turns.
     if not should_initiate_orchestration and is_mentioned_by_another_bot:
         should_initiate_orchestration = True
         # For inter-bot mentions, send the full message content as context
         user_message_for_orchestrator = message.content
-        initiator_bot_name = "Peter"
-        initiator_mention = PETER_BOT_MENTION_STRING
+        initiator_bot_name = "Stewie"
+        initiator_mention = STEWIE_BOT_MENTION_STRING
         # When another bot initiates, human_user_display_name remains None, which is fine for the LLM prompt
-        print("DEBUG: Peter Bot - Initiating orchestration due to inter-bot mention.")
+        print("DEBUG: Stewie Bot - Initiating orchestration due to inter-bot mention.")
 
 
     if not should_initiate_orchestration:
-        print("DEBUG: Peter Bot - Not the designated initiator for this message. Ignoring.")
+        print("DEBUG: Stewie Bot - Not the designated initiator for this message. Ignoring.")
         return # If this bot is not the designated initiator for this message, ignore.
 
     if not user_message_for_orchestrator:
-        await message.channel.send("Hey, you gotta tell me something, ya know? Like, 'What's for dinner?' Heheheh.")
-        print("DEBUG: Peter Bot - Empty user message after parsing. Sent fallback.")
+        await message.channel.send("Hmph. You dare address me without a proper query, you imbecile?")
+        print("DEBUG: Stewie Bot - Empty user message after parsing. Sent fallback.")
         return
 
-    print(f"DEBUG: Peter Bot - Initiating Orchestration for message from {message.author} (Type: {initiator_bot_name}): {user_message_for_orchestrator[:50]}... Sending to orchestrator...")
+    print(f"DEBUG: Stewie Bot - Initiating Orchestration for message from {message.author} (Type: {initiator_bot_name}): {user_message_for_orchestrator[:50]}... Sending to orchestrator...")
 
     async with message.channel.typing():
         try:
@@ -396,23 +393,23 @@ async def on_message(message):
 
             print("DEBUG: Message sent to orchestrator. Waiting for orchestrator to send Discord messages.")
         except requests.exceptions.Timeout:
-            await message.channel.send("Peter tried to talk to the brain guy, but he's taking too long! Heheheh.")
+            await message.channel.send("Stewie attempted to contact the central processing unit, but it seems to be taking an eternity to respond. My patience wears thin!")
             print(f"ERROR: ConnectionError: Timeout when sending to orchestrator. {traceback.format_exc()}")
         except requests.exceptions.ConnectionError:
-            await message.channel.send("Peter tried to talk to the brain guy, but he's not picking up! Maybe he's on a coffee break? Heheheh.")
+            await message.channel.send("Stewie attempted to contact the central processing unit, but it seems to be experiencing a momentary lapse in intelligence. Typical.")
             print(f"ERROR: ConnectionError: Orchestrator server might not be running or API URL is incorrect. {traceback.format_exc()}")
         except Exception as e:
             print(f"ERROR: Error sending message to orchestrator: {e}")
             print(traceback.format_exc()) # Log full traceback
-            await message.channel.send("Peter's having a bit of a brain fart right now. Try again!")
+            await message.channel.send("Stewie is currently too busy plotting world domination to entertain your trivial demands.")
 
 # --- Main execution ---
 if __name__ == '__main__':
     try:
         client.run(DISCORD_BOT_TOKEN)
     except discord.errors.LoginFailure:
-        print("ERROR: Invalid Discord bot token for Peter. Please check your DISCORD_BOT_TOKEN_PETER environment variable.")
+        print("ERROR: Invalid Discord bot token for Stewie. Please check your DISCORD_BOT_TOKEN_STEWIE environment variable.")
     except Exception as e:
-        print(f"CRITICAL: An unexpected error occurred while running Peter Bot's main Discord client: {e}")
+        print(f"CRITICAL: An unexpected error occurred while running Stewie Bot's main Discord client: {e}")
         print(traceback.format_exc()) # Log full traceback
 
