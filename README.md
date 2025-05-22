@@ -17,8 +17,8 @@ graph TD
     end
 
     subgraph Bots["Character Bots"]
-        PB[Peter Bot<br>:5004]
-        BB[Brian Bot<br>:5004]
+        PB[Peter Bot<br>:5005]
+        BB[Brian Bot<br>:5002]
         SB[Stewie Bot<br>:5004]
         RAG[RAG System]
         VDB[(Chroma DB)]
@@ -83,7 +83,7 @@ Before running the bots, make sure you have:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/discord-pg-bot.git
+   git clone https://github.com/DapeSec/discord-pg-bot.git
    cd discord-pg-bot
    ```
 
@@ -279,7 +279,7 @@ The system includes an automated feature that initiates random conversations thr
 
 ### System Components
 - **Orchestrator Server** (:5003): Central message handler and conversation manager
-- **Character Bots** (:5004): Individual bot servers for Peter, Brian, and Stewie
+- **Character Bots**: Individual bot servers for Peter (:5005), Brian (:5002), and Stewie (:5004)
 - **MongoDB Database**: Stores conversation history and context
 - **Chroma DB**: Vector database for RAG system, storing embeddings for contextual retrieval
 - **Ollama/Mistral**: Provides AI language model capabilities
