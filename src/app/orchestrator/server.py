@@ -24,6 +24,17 @@ RETRY_DELAY_BASE = float(os.getenv("DLQ_RETRY_DELAY_BASE", "2.0"))  # Base for e
 MAX_RETRY_DELAY = int(os.getenv("DLQ_MAX_RETRY_DELAY", "300"))  # Maximum delay between retries in seconds
 RETRY_WORKER_INTERVAL = int(os.getenv("DLQ_RETRY_WORKER_INTERVAL", "60"))  # How often to check for retryable messages
 
+# Supervised Fine-Tuning System Configuration
+FINE_TUNING_ENABLED = os.getenv("FINE_TUNING_ENABLED", "true").lower() == "true"
+OPTIMIZATION_THRESHOLD = float(os.getenv("OPTIMIZATION_THRESHOLD", "0.7"))  # Trigger optimization when avg rating < 0.7
+MIN_RATINGS_FOR_OPTIMIZATION = int(os.getenv("MIN_RATINGS_FOR_OPTIMIZATION", "10"))
+AB_TEST_PERCENTAGE = float(os.getenv("AB_TEST_PERCENTAGE", "0.2"))  # 20% traffic for A/B testing
+
+# Quality Control Configuration
+QUALITY_CONTROL_ENABLED = os.getenv("QUALITY_CONTROL_ENABLED", "true").lower() == "true"
+QUALITY_CONTROL_MIN_RATING = float(os.getenv("QUALITY_CONTROL_MIN_RATING", "3.0"))  # Minimum acceptable rating
+QUALITY_CONTROL_MAX_RETRIES = int(os.getenv("QUALITY_CONTROL_MAX_RETRIES", "3"))  # Max retries for quality
+
 class MessageStatus:
     PENDING = "pending"
     PROCESSING = "processing"
@@ -434,15 +445,41 @@ CHARACTER_CHAINS = {
     for character, prompt in CHARACTER_PROMPTS.items()
 }
 
-def generate_character_response(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None):
+def generate_character_response(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None, skip_auto_assessment=False):
     """
     Generates a response for a specific character using the centralized LLM.
+    Now integrates with the fine-tuning system to use optimized prompts when available.
+    
+    Args:
+        skip_auto_assessment: If True, skips the automatic quality assessment (used by quality control)
     """
     if character_name not in CHARACTER_CHAINS:
         raise ValueError(f"Unknown character: {character_name}")
     
     try:
-        chain = CHARACTER_CHAINS[character_name]
+        # Check if we have an optimized prompt for this character
+        chain = None
+        if prompt_fine_tuner and FINE_TUNING_ENABLED:
+            try:
+                optimized_prompt = prompt_fine_tuner.get_optimized_prompt(character_name)
+                if optimized_prompt:
+                    # Create temporary chain with optimized prompt
+                    optimized_character_prompt = ChatPromptTemplate.from_messages([
+                        ("system", optimized_prompt),
+                        MessagesPlaceholder(variable_name="chat_history"),
+                        ("user", "Context: {mention_context}\nRetrieved context: {retrieved_context}\nHuman user display name (use if relevant): {human_user_display_name}\n\nInput: {input_text}")
+                    ])
+                    chain = optimized_character_prompt | orchestrator_llm
+                    print(f"📋 Using optimized prompt for {character_name}")
+                else:
+                    chain = CHARACTER_CHAINS[character_name]
+                    print(f"📋 Using default prompt for {character_name}")
+            except Exception as ft_error:
+                print(f"⚠️ Fine-tuning system error, falling back to default prompt: {ft_error}")
+                chain = CHARACTER_CHAINS[character_name]
+        else:
+            chain = CHARACTER_CHAINS[character_name]
+        
         response = chain.invoke({
             "chat_history": conversation_history,
             "mention_context": mention_context,
@@ -451,11 +488,115 @@ def generate_character_response(character_name, conversation_history, mention_co
             "human_user_display_name": human_user_display_name
         })
         
-        return clean_llm_response(response)
+        response_text = clean_llm_response(response)
+        
+        # 📊 AUTOMATIC LLM-BASED QUALITY ASSESSMENT: Record LLM's evaluation of response quality
+        if prompt_fine_tuner and not skip_auto_assessment:
+            try:
+                # Get full LLM assessment with detailed feedback
+                conversation_text = ""
+                for msg in conversation_history[-3:]:  # Last 3 messages for context
+                    if isinstance(msg, HumanMessage):
+                        conversation_text += f"Human: {msg.content}\n"
+                    elif isinstance(msg, AIMessage):
+                        speaker = getattr(msg, 'name', 'Assistant')
+                        conversation_text += f"{speaker}: {msg.content}\n"
+                
+                llm_assessment = _assess_response_quality_with_llm(character_name, response_text, conversation_text, retrieved_context)
+                if llm_assessment:
+                    auto_rating = llm_assessment["rating"]
+                    auto_feedback = llm_assessment["feedback"]
+                    
+                    print(f"🤖 LLM assessed response quality: {auto_rating}/5")
+                    print(f"   💭 Assessment preview: {auto_feedback[:150]}...")
+                    
+                    # Record the LLM's automatic assessment
+                    rating_id = prompt_fine_tuner.record_rating(
+                        character_name=character_name,
+                        response_text=response_text,
+                        rating=auto_rating,
+                        feedback=f"LLM Auto-Assessment: {auto_feedback}",
+                        user_id="llm_auto_assessment",
+                        conversation_context=conversation_text
+                    )
+                    if rating_id:
+                        print(f"✅ Recorded LLM auto-assessment (ID: {rating_id})")
+                else:
+                    # Fallback: Basic heuristic assessment if LLM assessment fails
+                    auto_rating = _assess_response_quality_basic(character_name, response_text)
+                    if auto_rating:
+                        rating_id = prompt_fine_tuner.record_rating(
+                            character_name=character_name,
+                            response_text=response_text,
+                            rating=auto_rating,
+                            feedback="Basic heuristic auto-assessment",
+                            user_id="heuristic_auto_assessment", 
+                            conversation_context=conversation_text
+                        )
+                        if rating_id:
+                            print(f"✅ Recorded fallback auto-assessment (ID: {rating_id})")
+            except Exception as assessment_error:
+                print(f"⚠️ Auto-assessment failed: {assessment_error}")
+        
+        return response_text
+        
     except Exception as e:
         print(f"Error generating response for {character_name}: {e}")
         print(traceback.format_exc())
         return f"{character_name} is having trouble thinking right now..."
+
+def _assess_response_quality_basic(character_name, response_text):
+    """
+    Basic heuristic quality assessment as fallback when LLM assessment fails.
+    Returns a quality score 1-5 based on character-specific indicators.
+    """
+    try:
+        score = 3.0  # Start with neutral score
+        text_lower = response_text.lower()
+        
+        # Get character-specific quality indicators
+        if character_name == "Peter":
+            # Peter positive indicators
+            if any(phrase in text_lower for phrase in ["hehehe", "holy crap", "freakin", "awesome", "heh"]):
+                score += 0.5
+            if any(phrase in text_lower for phrase in ["chicken", "pawtucket", "beer", "tv"]):
+                score += 0.3
+            # Peter negative indicators  
+            if any(phrase in text_lower for phrase in ["sophisticated", "intellectual", "profound"]):
+                score -= 0.5
+                
+        elif character_name == "Brian":
+            # Brian positive indicators
+            if any(phrase in text_lower for phrase in ["intellectual", "actually", "sophisticated", "literary"]):
+                score += 0.5
+            if any(phrase in text_lower for phrase in ["book", "culture", "society", "politics"]):
+                score += 0.3
+            # Brian negative indicators
+            if any(phrase in text_lower for phrase in ["hehehe", "stupid", "dumb"]):
+                score -= 0.5
+                
+        elif character_name == "Stewie":
+            # Stewie positive indicators
+            if any(phrase in text_lower for phrase in ["what the deuce", "blast", "evil", "genius", "sophisticated"]):
+                score += 0.5
+            if any(phrase in text_lower for phrase in ["machine", "device", "plan", "british"]):
+                score += 0.3
+            # Stewie negative indicators
+            if any(phrase in text_lower for phrase in ["simple", "dumb", "hehehe"]):
+                score -= 0.5
+        
+        # General quality indicators
+        if len(response_text) < 20:  # Too short
+            score -= 0.5
+        elif len(response_text) > 2000:  # Too long
+            score -= 0.3
+            
+        # Ensure score is within bounds
+        return max(1.0, min(5.0, score))
+        
+    except Exception as e:
+        print(f"Error in basic quality assessment: {e}")
+        return 3.0  # Neutral score if assessment fails
 
 # Extract character descriptions from CHARACTER_PROMPTS for reuse
 def get_character_description(character_name):
@@ -1025,8 +1166,8 @@ Use these exact mention strings when referring to other characters in your respo
         retries = 0
         while retries < MAX_RETRIES:
             try:
-                print(f"Orchestrator generating {current_speaker_name}'s response using centralized LLM (attempt {retries + 1}/{MAX_RETRIES})...")
-                response_text = generate_character_response(
+                print(f"Orchestrator generating {current_speaker_name}'s response using quality-controlled generation (attempt {retries + 1}/{MAX_RETRIES})...")
+                response_text = generate_character_response_with_quality_control(
                     character_name=current_speaker_name,
                     conversation_history=chat_history_messages,
                     mention_context=mention_context,
@@ -1176,34 +1317,307 @@ def run_flask_app():
 # --- Health Check Endpoint ---
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint for Docker and load balancers."""
+    """Simple health check endpoint for load balancer."""
     try:
-        # Check MongoDB connectivity
-        if mongo_client:
-            mongo_client.admin.command('ping')
-        else:
-            return jsonify({"status": "unhealthy", "reason": "MongoDB not connected"}), 503
-        
-        # Check if vector store is initialized
-        if vectorstore is None:
-            return jsonify({"status": "degraded", "reason": "Vector store not initialized"}), 200
-        
-        return jsonify({
-            "status": "healthy", 
-            "timestamp": datetime.now().isoformat(),
-            "version": "1.0.0",
-            "components": {
-                "mongodb": "healthy",
-                "vectorstore": "healthy" if vectorstore else "not_initialized",
-                "dlq": "healthy" if dlq else "not_initialized"
-            }
-        }), 200
+        # Check database connectivity
+        mongo_client.admin.command('ping')
+        db_status = "connected"
     except Exception as e:
+        db_status = f"error: {str(e)}"
+    
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "database": db_status,
+        "embeddings_model": "loaded" if 'embeddings_model' in globals() else "not_loaded",
+        "vector_store": "loaded" if 'vector_store' in globals() else "not_loaded"
+    })
+
+# Fine-Tuning System API Endpoints
+
+@app.route('/rate_response', methods=['POST'])
+def rate_response():
+    """
+    Endpoint for users to rate character responses.
+    Expected JSON: {
+        "character_name": "Peter|Brian|Stewie",
+        "response_text": "The response to rate",
+        "rating": 1-5,
+        "feedback": "Optional feedback text",
+        "conversation_context": "Optional context"
+    }
+    """
+    try:
+        if not prompt_fine_tuner:
+            return jsonify({"error": "Fine-tuning system not available"}), 503
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ["character_name", "response_text", "rating"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+        
+        character_name = data["character_name"]
+        response_text = data["response_text"]
+        rating = data["rating"]
+        feedback = data.get("feedback", "")
+        conversation_context = data.get("conversation_context", "")
+        user_id = data.get("user_id", "api_user")
+        
+        # Validate character name
+        if character_name not in ["Peter", "Brian", "Stewie"]:
+            return jsonify({"error": "Invalid character_name. Must be Peter, Brian, or Stewie"}), 400
+        
+        # Validate rating
+        if not isinstance(rating, (int, float)) or not (1 <= rating <= 5):
+            return jsonify({"error": "Rating must be a number between 1 and 5"}), 400
+        
+        # Record the rating
+        rating_id = prompt_fine_tuner.record_rating(
+            character_name=character_name,
+            response_text=response_text,
+            rating=rating,
+            feedback=feedback,
+            user_id=user_id,
+            conversation_context=conversation_context
+        )
+        
+        if rating_id:
+            return jsonify({
+                "success": True,
+                "rating_id": rating_id,
+                "message": f"Rating recorded for {character_name}"
+            })
+        else:
+            return jsonify({"error": "Failed to record rating"}), 500
+            
+    except Exception as e:
+        print(f"Error in rate_response endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/optimization_report', methods=['GET'])
+def get_optimization_report():
+    """
+    Get optimization status and performance metrics for all characters.
+    Query params: ?days=7 (optional, defaults to 7 days)
+    """
+    try:
+        if not prompt_fine_tuner:
+            return jsonify({"error": "Fine-tuning system not available"}), 503
+        
+        days = int(request.args.get('days', 7))
+        
+        reports = {}
+        for character in ["Peter", "Brian", "Stewie"]:
+            reports[character] = prompt_fine_tuner.get_performance_report(character, days)
+        
         return jsonify({
-            "status": "unhealthy", 
-            "reason": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 503
+            "optimization_reports": reports,
+            "period_days": days,
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        print(f"Error in optimization_report endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/prompt_performance', methods=['GET'])
+def get_prompt_performance():
+    """
+    Get detailed performance metrics for a specific character.
+    Query params: ?character=Peter&days=7
+    """
+    try:
+        if not prompt_fine_tuner:
+            return jsonify({"error": "Fine-tuning system not available"}), 503
+        
+        character = request.args.get('character')
+        days = int(request.args.get('days', 30))
+        
+        if not character or character not in ["Peter", "Brian", "Stewie"]:
+            return jsonify({"error": "Invalid or missing character parameter"}), 400
+        
+        # Get performance report
+        report = prompt_fine_tuner.get_performance_report(character, days)
+        
+        # Get prompt versions history
+        versions = list(prompt_fine_tuner.prompt_versions_collection.find(
+            {"character_name": character},
+            sort=[("version", -1)]
+        ).limit(10))
+        
+        # Convert ObjectId to string for JSON serialization
+        for version in versions:
+            version["_id"] = str(version["_id"])
+            if "created_at" in version:
+                version["created_at"] = version["created_at"].isoformat()
+        
+        return jsonify({
+            "character": character,
+            "performance_report": report,
+            "prompt_versions": versions,
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        print(f"Error in prompt_performance endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/trigger_optimization', methods=['POST'])
+def trigger_manual_optimization():
+    """
+    Manually trigger prompt optimization for a character.
+    Expected JSON: {"character_name": "Peter|Brian|Stewie"}
+    """
+    try:
+        if not prompt_fine_tuner:
+            return jsonify({"error": "Fine-tuning system not available"}), 503
+        
+        data = request.get_json()
+        character_name = data.get("character_name")
+        
+        if not character_name or character_name not in ["Peter", "Brian", "Stewie"]:
+            return jsonify({"error": "Invalid character_name"}), 400
+        
+        # Get recent ratings for optimization
+        recent_ratings = list(prompt_fine_tuner.ratings_collection.find(
+            {"character_name": character_name},
+            sort=[("timestamp", -1)],
+            limit=MIN_RATINGS_FOR_OPTIMIZATION
+        ))
+        
+        if len(recent_ratings) < 5:  # Need at least 5 ratings
+            return jsonify({
+                "error": f"Not enough ratings for optimization. Need at least 5, have {len(recent_ratings)}"
+            }), 400
+        
+        # Trigger optimization
+        success = prompt_fine_tuner.optimize_prompt(character_name, recent_ratings)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": f"Optimization triggered for {character_name}",
+                "new_version": prompt_fine_tuner.get_current_prompt_version(character_name)
+            })
+        else:
+            return jsonify({"error": "Optimization failed"}), 500
+            
+    except Exception as e:
+        print(f"Error in trigger_optimization endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/fine_tuning_stats', methods=['GET'])
+def get_fine_tuning_stats():
+    """Get overall fine-tuning system statistics."""
+    try:
+        if not prompt_fine_tuner:
+            return jsonify({"error": "Fine-tuning system not available"}), 503
+        
+        stats = {}
+        
+        for character in ["Peter", "Brian", "Stewie"]:
+            # Count total ratings
+            total_ratings = prompt_fine_tuner.ratings_collection.count_documents(
+                {"character_name": character}
+            )
+            
+            # Count recent ratings (last 7 days)
+            week_ago = datetime.now() - timedelta(days=7)
+            recent_ratings = prompt_fine_tuner.ratings_collection.count_documents({
+                "character_name": character,
+                "timestamp": {"$gte": week_ago}
+            })
+            
+            # Get average rating
+            pipeline = [
+                {"$match": {"character_name": character}},
+                {"$group": {"_id": None, "avg_rating": {"$avg": "$rating"}}}
+            ]
+            avg_result = list(prompt_fine_tuner.ratings_collection.aggregate(pipeline))
+            avg_rating = avg_result[0]["avg_rating"] if avg_result else None
+            
+            # Count prompt versions
+            version_count = prompt_fine_tuner.prompt_versions_collection.count_documents(
+                {"character_name": character}
+            )
+            
+            stats[character] = {
+                "total_ratings": total_ratings,
+                "recent_ratings_7d": recent_ratings,
+                "average_rating": round(avg_rating, 2) if avg_rating else None,
+                "prompt_versions": version_count,
+                "current_version": prompt_fine_tuner.get_current_prompt_version(character)
+            }
+        
+        return jsonify({
+            "system_stats": stats,
+            "configuration": {
+                "fine_tuning_enabled": FINE_TUNING_ENABLED,
+                "quality_control_enabled": QUALITY_CONTROL_ENABLED,
+                "optimization_threshold": OPTIMIZATION_THRESHOLD,
+                "min_ratings_for_optimization": MIN_RATINGS_FOR_OPTIMIZATION,
+                "ab_test_percentage": AB_TEST_PERCENTAGE,
+                "quality_control_min_rating": QUALITY_CONTROL_MIN_RATING
+            },
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        print(f"Error in fine_tuning_stats endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/quality_control_status', methods=['GET'])
+def get_quality_control_status():
+    """
+    Endpoint to get the current quality control configuration and statistics.
+    """
+    try:
+        # Get quality control statistics from the database
+        if prompt_fine_tuner:
+            quality_control_stats = {}
+            
+            # Count ratings by user type to see quality control activity
+            for character in ["Peter", "Brian", "Stewie"]:
+                char_stats = {
+                    "quality_control_accepted": prompt_fine_tuner.ratings_collection.count_documents({
+                        "character_name": character,
+                        "user_id": "quality_control_llm_assessment",
+                        "feedback": {"$regex": "Quality Control Approved"}
+                    }),
+                    "quality_control_rejected": prompt_fine_tuner.ratings_collection.count_documents({
+                        "character_name": character,
+                        "user_id": "quality_control_llm_assessment", 
+                        "feedback": {"$regex": "Quality Control Rejected"}
+                    })
+                }
+                
+                # Calculate acceptance rate
+                total_qc = char_stats["quality_control_accepted"] + char_stats["quality_control_rejected"]
+                if total_qc > 0:
+                    char_stats["acceptance_rate"] = round(char_stats["quality_control_accepted"] / total_qc * 100, 1)
+                else:
+                    char_stats["acceptance_rate"] = None
+                
+                quality_control_stats[character] = char_stats
+        else:
+            quality_control_stats = "Fine-tuning system not available"
+        
+        return jsonify({
+            "configuration": {
+                "enabled": QUALITY_CONTROL_ENABLED,
+                "min_rating_threshold": QUALITY_CONTROL_MIN_RATING,
+                "max_retries": QUALITY_CONTROL_MAX_RETRIES
+            },
+            "statistics": quality_control_stats,
+            "generated_at": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        print(f"Error in quality_control_status endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # --- Enhanced Conversation Coordinator using Full Character Prompts ---
 def create_enhanced_coordinator_prompt():
@@ -1236,7 +1650,7 @@ def create_enhanced_coordinator_prompt():
          f"- Think about realistic conversation dynamics between these specific characters\n\n"
          f"RESPONSE FORMAT: Respond with ONLY the character name: 'Peter', 'Brian', or 'Stewie'"
         ),
-        ("user", "Conversation context:\n{conversation_analysis}\n\nWho should respond next and why would they naturally want to speak up?")
+        ("user", "Conversation context:\n{conversation_analysis}\n\nWho should respond next? Answer with ONLY the character name (Peter, Brian, or Stewie):")
     ])
 
 conversation_coordinator_prompt = create_enhanced_coordinator_prompt()
@@ -1366,6 +1780,16 @@ CHARACTER REACTION PREDICTIONS:
         
         # Clean and validate the response
         selected_character = clean_llm_response(coordinator_response).strip()
+        
+        # Improve parsing - extract character name from potentially detailed response
+        # Look for character names in the response
+        response_lower = selected_character.lower()
+        if 'peter' in response_lower:
+            selected_character = 'Peter'
+        elif 'brian' in response_lower:
+            selected_character = 'Brian'
+        elif 'stewie' in response_lower:
+            selected_character = 'Stewie'
         
         # Ensure the response is a valid character name
         if selected_character in BOT_CONFIGS:
@@ -1671,6 +2095,9 @@ class OrganicConversationCoordinator:
 # Global organic coordinator instance
 organic_coordinator = OrganicConversationCoordinator()
 
+# Fine-tuning system placeholder (will be enabled when implementation is added)
+prompt_fine_tuner = None
+
 def organic_conversation_monitor():
     """
     Monitors for organic conversation opportunities and manages background tasks.
@@ -1726,6 +2153,21 @@ if __name__ == '__main__':
         get_embeddings_model() # Initialize embeddings model on startup
         initialize_vector_store() # Initialize or load vector store on startup
         
+        # Initialize the fine-tuning system after MongoDB connection is established
+        try:
+            if mongo_client:
+                prompt_fine_tuner = PromptFineTuner(mongo_client)
+                print("🎯 Supervised Fine-Tuning System initialized successfully")
+                print(f"   📊 Quality Control: {'Enabled' if QUALITY_CONTROL_ENABLED else 'Disabled'}")
+                print(f"   🎯 Auto-Optimization: {'Enabled' if FINE_TUNING_ENABLED else 'Disabled'}")
+                print(f"   🧪 A/B Testing: {AB_TEST_PERCENTAGE*100}% traffic for optimized prompts")
+            else:
+                print("⚠️ Warning: MongoDB client not available, fine-tuning system disabled")
+                prompt_fine_tuner = None
+        except Exception as e:
+            print(f"⚠️ Warning: Could not initialize fine-tuning system: {e}")
+            prompt_fine_tuner = None
+        
         # Start the retry worker thread
         threading.Thread(target=retry_worker, daemon=True).start()
         print("Dead letter queue retry worker thread started.")
@@ -1748,4 +2190,202 @@ if __name__ == '__main__':
         if mongo_client:
             mongo_client.close()
             print("MongoDB connection closed.")
+
+def _assess_response_quality_with_llm(character_name, response_text, conversation_context, retrieved_context=""):
+    """
+    Advanced automatic quality assessment using LLM to evaluate character accuracy.
+    Returns a quality score 1-5 and detailed feedback, or None if assessment fails.
+    """
+    try:
+        # Get character description for reference
+        character_description = get_character_description(character_name)
+        
+        # Create assessment prompt
+        assessment_prompt = f"""You are an expert evaluator of Family Guy character accuracy. Your job is to rate how well a response matches the target character's personality, speech patterns, and behavior.
+
+CHARACTER TO EVALUATE: {character_name} from Family Guy
+
+CHARACTER DESCRIPTION:
+{character_description}
+
+CONVERSATION CONTEXT:
+{conversation_context}
+
+FAMILY GUY UNIVERSE CONTEXT:
+{retrieved_context if retrieved_context else "No specific universe context available"}
+
+RESPONSE TO EVALUATE:
+"{response_text}"
+
+EVALUATION CRITERIA:
+1. **Speech Patterns** (25%): Does the character use their typical vocabulary, catchphrases, and speaking style?
+2. **Personality Accuracy** (25%): Does the response reflect their core personality traits and motivations?
+3. **Character Knowledge** (20%): Is the response consistent with what this character would know/care about?
+4. **Humor Style** (20%): Does the humor match their typical comedic approach?
+5. **Contextual Appropriateness** (10%): Does the response fit the conversation naturally?
+
+SCORING SCALE:
+5 = Excellent character portrayal, very authentic
+4 = Good character accuracy with minor issues
+3 = Acceptable but some character inconsistencies
+2 = Poor character accuracy, significant issues
+1 = Very poor, barely recognizable as the character
+
+Please provide:
+1. Overall rating (1-5)
+2. Brief strengths (what worked well)
+3. Brief weaknesses (what could improve)
+4. Specific suggestions for improvement
+
+FORMAT:
+Rating: [1-5]
+Strengths: [brief description]
+Weaknesses: [brief description]
+Suggestions: [specific improvements]"""
+
+        # Get LLM assessment
+        assessment_response = orchestrator_llm.invoke(assessment_prompt)
+        assessment_text = clean_llm_response(assessment_response).strip()
+        
+        # Parse the response
+        lines = assessment_text.split('\n')
+        rating = None
+        feedback_parts = {}
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Rating:'):
+                try:
+                    rating_text = line.split(':')[1].strip()
+                    rating = float(rating_text)
+                except:
+                    # Try to extract number from text
+                    import re
+                    numbers = re.findall(r'\d+(?:\.\d+)?', rating_text)
+                    if numbers:
+                        rating = float(numbers[0])
+            elif line.startswith('Strengths:'):
+                feedback_parts['strengths'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Weaknesses:'):
+                feedback_parts['weaknesses'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Suggestions:'):
+                feedback_parts['suggestions'] = line.split(':', 1)[1].strip()
+        
+        if rating is not None and 1 <= rating <= 5:
+            # Combine feedback into a single string
+            feedback = f"Strengths: {feedback_parts.get('strengths', 'N/A')}. Weaknesses: {feedback_parts.get('weaknesses', 'N/A')}. Suggestions: {feedback_parts.get('suggestions', 'N/A')}"
+            
+            return {
+                "rating": rating,
+                "feedback": feedback,
+                "detailed_assessment": feedback_parts
+            }
+        else:
+            print(f"⚠️ LLM assessment failed to parse rating from: {assessment_text[:100]}...")
+            return None
+            
+    except Exception as e:
+        print(f"⚠️ Error in LLM auto-assessment: {e}")
+        return None
+
+def generate_character_response_with_quality_control(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None):
+    """
+    Quality-controlled character response generation that uses LLM auto-assessment
+    to ensure responses meet quality standards before being sent to users.
+    """
+    if not QUALITY_CONTROL_ENABLED:
+        # Quality control disabled, use regular generation
+        return generate_character_response(
+            character_name=character_name,
+            conversation_history=conversation_history,
+            mention_context=mention_context,
+            input_text=input_text,
+            retrieved_context=retrieved_context,
+            human_user_display_name=human_user_display_name,
+            skip_auto_assessment=False
+        )
+    
+    print(f"🛡️ Quality Control: Generating {character_name} response with quality assurance...")
+    
+    for attempt in range(QUALITY_CONTROL_MAX_RETRIES):
+        try:
+            # Generate response using existing function
+            response_text = generate_character_response(
+                character_name=character_name,
+                conversation_history=conversation_history,
+                mention_context=mention_context,
+                input_text=input_text,
+                retrieved_context=retrieved_context,
+                human_user_display_name=human_user_display_name,
+                skip_auto_assessment=True  # Skip auto-assessment since quality control handles it
+            )
+            
+            if not response_text:
+                print(f"🛡️ Quality Control: No response generated on attempt {attempt + 1}")
+                continue
+            
+            # Assess quality using LLM
+            conversation_text = ""
+            for msg in conversation_history[-3:]:  # Last 3 messages for context
+                if isinstance(msg, HumanMessage):
+                    conversation_text += f"Human: {msg.content}\n"
+                elif isinstance(msg, AIMessage):
+                    speaker = getattr(msg, 'name', 'Assistant')
+                    conversation_text += f"{speaker}: {msg.content}\n"
+            
+            quality_assessment = _assess_response_quality_with_llm(
+                character_name=character_name,
+                response_text=response_text,
+                conversation_context=conversation_text,
+                retrieved_context=retrieved_context
+            )
+            
+            if quality_assessment and quality_assessment["rating"] >= QUALITY_CONTROL_MIN_RATING:
+                # Quality passed - record the assessment and return response
+                if prompt_fine_tuner:
+                    rating_id = prompt_fine_tuner.record_rating(
+                        character_name=character_name,
+                        response_text=response_text,
+                        rating=quality_assessment["rating"],
+                        feedback=f"Quality Control Approved: {quality_assessment['feedback']}",
+                        user_id="quality_control_llm_assessment",
+                        conversation_context=conversation_text
+                    )
+                    
+                print(f"✅ Quality Control: Response approved with rating {quality_assessment['rating']}/5 (attempt {attempt + 1})")
+                print(f"   💭 Assessment: {quality_assessment['feedback'][:100]}...")
+                return response_text
+            
+            elif quality_assessment:
+                # Quality failed - try again
+                print(f"❌ Quality Control: Response rejected with rating {quality_assessment['rating']}/5 (attempt {attempt + 1}/{QUALITY_CONTROL_MAX_RETRIES})")
+                print(f"   💭 Issues: {quality_assessment['feedback'][:150]}...")
+                
+                # Record the rejected response for learning
+                if prompt_fine_tuner:
+                    prompt_fine_tuner.record_rating(
+                        character_name=character_name,
+                        response_text=response_text,
+                        rating=quality_assessment["rating"],
+                        feedback=f"Quality Control Rejected: {quality_assessment['feedback']}",
+                        user_id="quality_control_llm_assessment",
+                        conversation_context=conversation_text
+                    )
+                
+                if attempt < QUALITY_CONTROL_MAX_RETRIES - 1:
+                    print(f"🔄 Quality Control: Regenerating response...")
+                    continue
+            else:
+                print(f"⚠️ Quality Control: Assessment failed on attempt {attempt + 1}")
+                if attempt < QUALITY_CONTROL_MAX_RETRIES - 1:
+                    continue
+        
+        except Exception as e:
+            print(f"❌ Quality Control: Error on attempt {attempt + 1}: {e}")
+            if attempt < QUALITY_CONTROL_MAX_RETRIES - 1:
+                continue
+    
+    # All attempts failed - return the last response anyway with warning
+    print(f"⚠️ Quality Control: All {QUALITY_CONTROL_MAX_RETRIES} attempts failed, using last generated response")
+    return response_text if 'response_text' in locals() else f"I'm having trouble generating a good response right now. *{character_name} scratches head*"
 

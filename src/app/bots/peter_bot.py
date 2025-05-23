@@ -80,44 +80,66 @@ def health_check():
 # Helper to send a message to a Discord channel from a non-async context (Flask thread)
 async def _send_discord_message_async(channel_id, message_content):
     # Ensure channel_id is an integer for discord.py functions
-    channel_id_int = int(channel_id)
+    try:
+        channel_id_int = int(channel_id)
+        print(f"🔍 DEBUG: Peter attempting to send to channel {channel_id_int}")
+        print(f"   📝 Message content: '{message_content[:100]}...'")
+        print(f"   🤖 Bot status: {'Ready' if client.is_ready() else 'Not Ready'}")
+        print(f"   🌐 Bot user: {client.user}")
+    except ValueError:
+        print(f"❌ ERROR: Invalid channel_id format: {channel_id}")
+        return
 
     channel = client.get_channel(channel_id_int) # Try getting from cache first
     if channel is None:
-        print(f"DEBUG: Channel {channel_id_int} not found in cache. Attempting to fetch from Discord API...")
+        print(f"🔍 DEBUG: Channel {channel_id_int} not found in cache. Attempting to fetch from Discord API...")
         try:
             channel = await client.fetch_channel(channel_id_int) # Fetch from Discord API
-            print(f"DEBUG: Successfully fetched channel {channel_id_int} from Discord API.")
+            print(f"✅ DEBUG: Successfully fetched channel {channel_id_int} from Discord API")
         except discord.NotFound:
-            print(f"ERROR: Channel with ID {channel_id_int} not found on Discord. Check if the channel exists or bot has access.")
+            print(f"❌ ERROR: Channel {channel_id_int} not found or bot doesn't have access.")
+            print(f"   🔧 Troubleshooting: Check if the bot is in the correct server and channel")
             return
         except discord.Forbidden:
-            print(f"ERROR: Bot does not have permissions to access channel {channel_id_int}. Check bot's 'View Channel' permissions.")
+            print(f"❌ ERROR: Bot doesn't have permission to access channel {channel_id_int}.")
+            print(f"   🔧 Troubleshooting: Check bot permissions in Discord server settings")
             return
         except Exception as e:
-            print(f"ERROR: Unexpected error fetching channel {channel_id_int}: {e}")
-            print(traceback.format_exc())
+            print(f"❌ ERROR: Failed to fetch channel {channel_id_int}: {e}")
+            print(f"   🔧 Troubleshooting: Check if bot token is valid and bot is properly connected")
             return
+    else:
+        print(f"✅ DEBUG: Found channel {channel_id_int} in cache: {channel.name}")
 
     if channel:
-        # Discord message length limit is 2000 characters
-        if len(message_content) > 2000: # Use literal 2000 for Discord's limit
-            print(f"WARNING: Message too long ({len(message_content)} chars). Truncating for Discord.")
-            message_content = message_content[:1997] + "..." # Truncate and add ellipsis
         try:
-            await channel.send(message_content)
-            print(f"DEBUG: Successfully sent message to channel {channel_id_int}.")
-        except discord.Forbidden:
-            print(f"ERROR: Bot does not have 'Send Messages' permission in channel {channel_id_int}.")
-            print(traceback.format_exc())
+            print(f"🚀 DEBUG: Sending message to channel {channel.name} ({channel_id_int})")
+            print(f"   📝 Full message: '{message_content}'")
+            print(f"   🔐 Bot permissions in channel: {channel.permissions_for(channel.guild.me)}")
+            
+            sent_message = await channel.send(message_content)
+            
+            print(f"✅ SUCCESS: Message sent to channel {channel.name} ({channel_id_int})")
+            print(f"   📬 Message ID: {sent_message.id}")
+            print(f"   ⏰ Timestamp: {sent_message.created_at}")
+            print(f"   🔗 Jump URL: {sent_message.jump_url}")
+            
+        except discord.Forbidden as e:
+            print(f"❌ ERROR: Bot doesn't have permission to send messages in channel {channel.name} ({channel_id_int}).")
+            print(f"   🔧 Error details: {e}")
+            print(f"   🔧 Troubleshooting: Check 'Send Messages' permission for the bot in this channel")
         except discord.HTTPException as e:
-            print(f"ERROR: Discord HTTP error sending message to {channel_id_int}: {e}")
-            print(traceback.format_exc())
+            print(f"❌ ERROR: Discord HTTP error when sending message: {e}")
+            print(f"   🔧 Error code: {e.status}")
+            print(f"   🔧 Error text: {e.text}")
         except Exception as e:
-            print(f"ERROR: Unexpected error sending message to {channel_id_int}: {e}")
-            print(traceback.format_exc())
+            print(f"❌ ERROR: Unexpected error sending message to channel {channel_id_int}: {e}")
+            print(f"   🔧 Error type: {type(e).__name__}")
+            import traceback
+            print(f"   🔧 Traceback: {traceback.format_exc()}")
     else:
-        print(f"ERROR: Final check: Could not obtain Discord channel object for ID {channel_id_int}. Message not sent.")
+        print(f"❌ ERROR: Unable to get or fetch channel {channel_id_int}")
+        print(f"   🔧 Troubleshooting: Verify channel ID and bot access")
 
 
 @app.route('/send_discord_message', methods=['POST'])
@@ -306,7 +328,7 @@ async def on_message(message):
         initiator_bot_name = "Peter"
         initiator_mention = PETER_BOT_MENTION_STRING
         human_user_display_name = message.author.display_name # Capture human user's display name
-        print("DEBUG: Peter Bot - Detected direct command '!peter'.")
+        print("✅ DEBUG: Peter Bot - Detected direct command '!peter'.")
     elif client.user.mentioned_in(message) and not is_author_another_bot: # Only if mentioned by a human
         # If Peter is mentioned, and it's NOT by another bot (meaning it's from a human)
         user_message_for_orchestrator = message.content.replace(PETER_BOT_MENTION_STRING, '').strip()
@@ -314,7 +336,10 @@ async def on_message(message):
         initiator_bot_name = "Peter"
         initiator_mention = PETER_BOT_MENTION_STRING
         human_user_display_name = message.author.display_name # Capture human user's display name
-        print("DEBUG: Peter Bot - Detected direct mention from human user.")
+        print("✅ DEBUG: Peter Bot - Detected direct mention from human user.")
+        print(f"   🎯 Peter's mention string: {PETER_BOT_MENTION_STRING}")
+        print(f"   📝 Message content: '{message.content}'")
+        print(f"   👤 Author: {message.author.display_name} (ID: {message.author.id})")
 
     # 2. Backup/Inter-bot conversation: If Peter is mentioned by another bot, he should join.
     # This is a backup if the direct query logic didn't trigger it, and ensures inter-bot turns.
@@ -325,11 +350,15 @@ async def on_message(message):
         initiator_bot_name = "Peter"
         initiator_mention = PETER_BOT_MENTION_STRING
         # When another bot initiates, human_user_display_name remains None, which is fine for the LLM prompt
-        print("DEBUG: Peter Bot - Initiating orchestration due to inter-bot mention.")
+        print("✅ DEBUG: Peter Bot - Initiating orchestration due to inter-bot mention.")
 
 
     if not should_initiate_orchestration:
-        print("DEBUG: Peter Bot - Not the designated initiator for this message. Ignoring.")
+        print("❌ DEBUG: Peter Bot - Not the designated initiator for this message. Ignoring.")
+        print(f"   📝 Message: '{message.content}'")
+        print(f"   🤖 Is mentioned by another bot: {is_mentioned_by_another_bot}")
+        print(f"   👤 Is from human: {not is_author_another_bot}")
+        print(f"   🎯 Peter mentioned: {client.user.mentioned_in(message)}")
         return # If this bot is not the designated initiator for this message, ignore.
 
     if not user_message_for_orchestrator:
@@ -348,7 +377,8 @@ async def on_message(message):
                 "initiator_mention": initiator_mention,
                 "human_user_display_name": human_user_display_name,
                 "is_new_conversation": is_new_conversation,
-                "conversation_session_id": conversation_session_id
+                "conversation_session_id": conversation_session_id,
+                "original_message": message.content  # NEW: Send original message with mentions
             }
 
             retry_count = 0

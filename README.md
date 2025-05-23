@@ -1,127 +1,394 @@
 # Family Guy Discord Bots
 
-An interactive Discord bot system featuring Peter Griffin, Brian Griffin, and Stewie Griffin from Family Guy. The bots use a **centralized LLM architecture** where the orchestrator handles all language model processing through Ollama, generating responses in characteristic styles for each bot. This design provides better resource efficiency, consistency, and maintainability while preserving the unique personalities of each character.
+An interactive Discord bot system featuring Peter Griffin, Brian Griffin, and Stewie Griffin from Family Guy. The bots use a **centralized LLM architecture** with **advanced AI systems** including **Supervised Fine-Tuning**, **Quality Control**, **RAG Integration**, and **Organic Conversation Coordination**. The orchestrator handles all language model processing through Ollama, generating responses in characteristic styles while continuously improving character accuracy through automated learning systems.
 
 ## Table of Contents
 1. [System Architecture](#system-architecture)
-2. [Features](#features)
-3. [Project Structure](#project-structure)
-4. [Prerequisites](#prerequisites)
-5. [Installation](#installation)
-6. [Docker Setup](#docker-setup)
-7. [Usage](#usage)
-8. [Technical Details](#technical-details)
-9. [Architecture Benefits](#architecture-benefits)
-10. [Contributing](#contributing)
-11. [License](#license)
+2. [Advanced Systems Overview](#advanced-systems-overview) 
+3. [System Interactions](#system-interactions)
+4. [Features](#features)
+5. [Project Structure](#project-structure)
+6. [Prerequisites](#prerequisites)
+7. [Installation](#installation)
+8. [Docker Setup](#docker-setup)
+9. [Usage](#usage)
+10. [Technical Details](#technical-details)
+11. [Architecture Benefits](#architecture-benefits)
+12. [Contributing](#contributing)
+13. [License](#license)
 
 ## System Architecture
 
 ```mermaid
 graph TD
-    subgraph Discord["Discord Platform"]
+    subgraph Discord["🎮 Discord Platform"]
         DC[Discord Channels]
-        DAuth[Discord Auth]
+        DU[Discord Users]
     end
 
-    subgraph Host["Host Machine"]
-        OL[Ollama LLM<br>GPU Accelerated]
+    subgraph Host["🖥️ Host Machine"]
+        OL[Ollama LLM<br>🚀 GPU Accelerated]
         ML[Model Loading<br>& Caching]
     end
 
-    subgraph Docker["Docker Environment"]
-        subgraph Orchestrator["Orchestrator Container"]
+    subgraph Docker["🐳 Docker Environment"]
+        subgraph Orchestrator["🎭 Orchestrator Container"]
             OS[Orchestrator Service<br>:5003]
-            CL[Centralized LLM<br>Processing]
-            CP[Character Prompts<br>& Personalities]
-            DLQ[Dead Letter<br>Queue]
             
-            subgraph RAG["RAG System (Integrated)"]
-                VDB[(Chroma DB)]
+            subgraph LLMSys["🧠 LLM Processing"]
+                CL[Centralized LLM<br>Character Generation]
+                CP[Character Prompts<br>& Personalities]
+                LLMCoord[LLM Conversation<br>Coordinator]
+            end
+            
+            subgraph FineTune["🎯 Fine-Tuning System"]
+                PFT[Prompt Fine-Tuner]
+                LLMAssess[LLM Auto-Assessment]
+                QC[Quality Control Agent]
+                ABTest[A/B Testing Engine]
+            end
+            
+            subgraph OrgSys["🌱 Organic System"]
+                OCC[Organic Conversation<br>Coordinator]
+                PatternAnalyzer[Conversation Pattern<br>Analyzer]
+                StarterGen[RAG-Enhanced<br>Starter Generator]
+            end
+            
+            subgraph RAGSys["🔍 RAG System"]
+                VDB[(Chroma Vector DB<br>Family Guy Wiki)]
+                Embed[Sentence Transformers<br>Embeddings]
+                ContextRet[Context Retrieval<br>& Augmentation]
+            end
+            
+            subgraph ErrorSys["⚠️ Error Management"]
+                DLQ[Dead Letter Queue]
+                RetryWorker[Retry Worker<br>Background Process]
+                ErrorHandler[Error Handler<br>& Fallbacks]
             end
         end
 
-        subgraph Bots["Bot Containers (Discord Only)"]
-            PB[Peter Bot<br>:5005<br>Discord Interface]
-            BB[Brian Bot<br>:5002<br>Discord Interface]
-            SB[Stewie Bot<br>:5004<br>Discord Interface]
+        subgraph Bots["🤖 Bot Containers"]
+            PB[Peter Bot<br>:5005<br>Discord Interface Only]
+            BB[Brian Bot<br>:5002<br>Discord Interface Only]
+            SB[Stewie Bot<br>:5004<br>Discord Interface Only]
         end
 
-        subgraph Storage["Storage Layer"]
-            MDB[(MongoDB<br>:27017)]
-            Log[(Log Storage)]
+        subgraph Storage["💾 Storage Layer"]
+            MDB[(MongoDB :27017<br>📊 Conversations<br>📈 Ratings<br>🎯 Metrics<br>📝 Prompt Versions)]
+            LogStore[(📋 Log Storage<br>System Events)]
         end
     end
 
-    DC <--> DAuth
-    DAuth <--> PB & BB & SB
+    %% Data Flow Connections
+    DC <--> DU
+    DU <--> PB & BB & SB
     
+    %% Bot to Orchestrator Flow
     PB & BB & SB --> OS
-    OS --> CL
+    
+    %% Orchestrator Internal Flow
+    OS --> LLMSys
     CL --> CP
     CL --> OL
     OL --> ML
     
-    OS --> DLQ
+    %% Fine-Tuning System Flow
+    CL --> FineTune
+    LLMAssess --> PFT
+    PFT --> QC
+    QC --> CL
+    ABTest --> CP
     
-    OS --> VDB
-    VDB --> CL
+    %% Organic Conversation Flow
+    OCC --> LLMSys
+    PatternAnalyzer --> OCC
+    StarterGen --> RAGSys
     
+    %% RAG System Flow
+    RAGSys --> CL
+    VDB --> ContextRet
+    Embed --> VDB
+    ContextRet --> CL
+    
+    %% Error Management Flow
+    ErrorSys --> OS
+    DLQ --> RetryWorker
+    RetryWorker --> PB & BB & SB
+    
+    %% Storage Connections
     OS --> MDB
-    PB & BB & SB --> Log
+    FineTune --> MDB
+    OCC --> MDB
+    PB & BB & SB --> LogStore
 
+    %% Styling
     style Discord fill:#7289DA,color:white
     style Docker fill:#4CAF50,color:white
     style Host fill:#FF9800,color:white
     style Storage fill:#2196F3,color:white
-    style RAG fill:#009688,color:white
     style Orchestrator fill:#FF5722,color:white
+    style LLMSys fill:#9C27B0,color:white
+    style FineTune fill:#E91E63,color:white
+    style OrgSys fill:#009688,color:white
+    style RAGSys fill:#795548,color:white
+    style ErrorSys fill:#607D8B,color:white
+```
+
+## Advanced Systems Overview
+
+The Discord bot system includes several sophisticated AI-powered subsystems that work together to create an intelligent, self-improving conversational experience:
+
+### 🎯 Supervised Fine-Tuning System
+**Automatically improves character accuracy through continuous learning**
+- **LLM Auto-Assessment**: Every response is automatically evaluated by the LLM for character accuracy (1-5 rating scale)
+- **Quality Control Agent**: Pre-send filtering ensures only high-quality responses reach users
+- **Prompt Optimization Engine**: Automatically improves character prompts based on accumulated feedback
+- **A/B Testing System**: Safely tests optimized prompts on limited traffic before full deployment
+- **Performance Tracking**: Comprehensive metrics and improvement analytics
+
+### 🧠 Advanced Conversation Coordination
+**Intelligent response selection and conversation management**
+- **LLM Conversation Coordinator**: Uses character descriptions and context to intelligently select who should respond
+- **RAG-Enhanced Decision Making**: Leverages Family Guy universe knowledge for character selection
+- **Multi-Factor Analysis**: Considers topic relevance, character dynamics, recent activity, and personality triggers
+- **Conversation Balance**: Ensures fair participation across all characters
+
+### 🌱 Organic Conversation System
+**Natural conversation initiation without rigid scheduling**
+- **Context-Driven Triggers**: Analyzes conversation patterns to detect natural conversation opportunities
+- **Intelligent Pattern Recognition**: Identifies conversation endings, unresolved topics, and follow-up opportunities
+- **RAG-Enhanced Starters**: Generates contextual conversation starters using Family Guy universe knowledge
+- **Character-Aware Initiation**: Uses the same coordinator logic to select appropriate conversation initiators
+- **Natural Flow Management**: Respects conversation cooldowns and avoids interrupting active discussions
+
+### 🔍 RAG (Retrieval-Augmented Generation) System
+**Context-aware responses using Family Guy universe knowledge**
+- **Vector Database**: Chroma DB storing Family Guy wiki content as searchable embeddings
+- **Automatic Crawling**: Weekly automated updates of Family Guy universe knowledge
+- **Context Integration**: Seamlessly incorporates relevant background information into responses
+- **Multi-Purpose Usage**: Enhances responses, conversation coordination, and starter generation
+
+### ⚠️ Robust Error Management
+**Comprehensive failure handling and recovery**
+- **Dead Letter Queue**: Failed messages are queued for intelligent retry with exponential backoff
+- **Retry Worker**: Background process continuously attempts to resolve failed operations
+- **Graceful Degradation**: System continues functioning even when components fail
+- **Error Classification**: Different handling for LLM failures, Discord issues, and database problems
+
+## System Interactions
+
+### 📊 Complete Workflow: User Message to Response
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 Discord User
+    participant Bot as 🤖 Character Bot
+    participant Orch as 🎭 Orchestrator
+    participant Coord as 🧠 LLM Coordinator
+    participant RAG as 🔍 RAG System
+    participant LLM as 🤖 Centralized LLM
+    participant QC as 🛡️ Quality Control
+    participant Assess as 📊 LLM Assessment
+    participant FT as 🎯 Fine-Tuning
+    participant DB as 💾 MongoDB
+
+    User->>Bot: "Hey Peter, what's up?"
+    Bot->>Orch: POST /orchestrate {user_query, channel_id}
+    
+    Orch->>DB: Fetch conversation history
+    DB-->>Orch: Historical context
+    
+    Orch->>Coord: Analyze message + history
+    Note over Coord: Uses character descriptions<br/>+ conversation patterns<br/>+ recent activity
+    Coord-->>Orch: Selected character: Peter
+    
+    Orch->>RAG: Retrieve context for user query
+    RAG->>RAG: Search Family Guy wiki vectors
+    RAG-->>Orch: Relevant context
+    
+    Orch->>QC: Generate quality-controlled response
+    
+    loop Quality Control (max 3 attempts)
+        QC->>LLM: Generate Peter response
+        Note over LLM: Uses character prompt<br/>+ conversation history<br/>+ RAG context
+        LLM-->>QC: Generated response
+        
+        QC->>Assess: Evaluate response quality
+        Note over Assess: LLM assessment:<br/>- Speech patterns (25%)<br/>- Personality (25%)<br/>- Character knowledge (20%)<br/>- Humor style (20%)<br/>- Context appropriateness (10%)
+        Assess-->>QC: Quality rating + feedback
+        
+        alt Quality >= 3.0/5
+            QC-->>Orch: Approved response
+        else Quality < 3.0/5
+            Note over QC: Retry with feedback
+        end
+    end
+    
+    Orch->>DB: Store conversation + assessment
+    Orch->>Bot: Send approved response
+    Bot->>User: "Hehehehehe! Just watching TV!"
+    
+    Assess->>FT: Record quality assessment
+    FT->>DB: Store rating + feedback
+    
+    Note over FT: Background optimization<br/>if ratings drop below 0.7
+```
+
+### 🌱 Organic Conversation Initiation Flow
+
+```mermaid
+sequenceDiagram
+    participant OCC as 🌱 Organic Coordinator
+    participant PA as 🔍 Pattern Analyzer
+    participant Coord as 🧠 LLM Coordinator
+    participant SG as 📝 Starter Generator
+    participant RAG as 🔍 RAG System
+    participant Orch as 🎭 Orchestrator
+    participant Bot as 🤖 Selected Bot
+    participant Discord as 💬 Discord
+
+    Note over OCC: Every 5 minutes
+    OCC->>PA: Analyze recent conversations
+    PA->>PA: Check silence duration<br/>Look for conversation triggers<br/>Detect natural endpoints
+    PA-->>OCC: Conversation opportunity detected
+    
+    OCC->>Coord: Select conversation initiator
+    Note over Coord: Uses character personality<br/>+ recent activity balance<br/>+ conversation context
+    Coord-->>OCC: Selected character: Brian
+    
+    OCC->>SG: Generate conversation starter
+    SG->>RAG: Get Family Guy context
+    RAG-->>SG: Relevant universe knowledge
+    SG->>SG: Create character-appropriate starter
+    SG-->>OCC: "I've been contemplating..."
+    
+    OCC->>Orch: Initiate organic conversation
+    Note over Orch: Uses same workflow as<br/>user-initiated conversations
+    Orch->>Bot: Send starter message
+    Bot->>Discord: Post organic conversation starter
+```
+
+### 🎯 Fine-Tuning System Operation
+
+```mermaid
+graph LR
+    subgraph RT["🔄 Real-Time Assessment"]
+        Response[Generated Response] --> LLMAssess[LLM Auto-Assessment]
+        LLMAssess --> QualityScore[Quality Score 1-5]
+        QualityScore --> Record[Record Rating]
+    end
+    
+    subgraph BG["⚙️ Background Optimization"]
+        Record --> Monitor[Monitor Avg Rating]
+        Monitor --> Trigger{Avg < 0.7?}
+        Trigger -->|Yes| Optimize[Optimize Prompt]
+        Optimize --> NewPrompt[Generate New Prompt]
+        NewPrompt --> ABTest[A/B Test 20% Traffic]
+        ABTest --> Validate[Validate Performance]
+        Validate --> Deploy[Deploy if Better]
+    end
+    
+    subgraph QC["🛡️ Quality Control"]
+        QualityScore --> Check{Rating >= 3.0?}
+        Check -->|No| Retry[Regenerate Response]
+        Check -->|Yes| Approve[Approve Response]
+        Retry --> Response
+        Approve --> SendUser[Send to User]
+    end
+
+    style RT fill:#E1F5FE
+    style BG fill:#F3E5F5
+    style QC fill:#E8F5E8
+```
+
+### 💾 Data Flow and Storage
+
+```mermaid
+graph TD
+    subgraph Input["📥 Input Sources"]
+        UserMsg[User Messages]
+        BotResp[Bot Responses]
+        OrgConv[Organic Conversations]
+    end
+    
+    subgraph Processing["⚙️ Real-Time Processing"]
+        LLMGen[LLM Generation]
+        QualAssess[Quality Assessment]
+        RAGEnrich[RAG Enrichment]
+        ConvCoord[Conversation Coordination]
+    end
+    
+    subgraph Storage["💾 MongoDB Collections"]
+        Conversations[(conversations<br/>💬 Message history<br/>📅 Timestamps<br/>🏷️ Session IDs)]
+        Ratings[(response_ratings<br/>⭐ Quality scores<br/>💭 Feedback<br/>👤 Assessor ID)]
+        PromptVersions[(prompt_versions<br/>📝 Prompt text<br/>🔢 Version numbers<br/>📊 Performance data)]
+        Metrics[(performance_metrics<br/>📈 Avg ratings<br/>📊 Improvement trends<br/>🎯 Optimization history)]
+        DLQ[(dead_letter_queue<br/>❌ Failed messages<br/>🔄 Retry attempts<br/>⏰ Next retry time)]
+    end
+    
+    subgraph Analytics["📊 Analytics & Learning"]
+        PerfMonitor[Performance Monitoring]
+        TrendAnalysis[Trend Analysis]
+        PromptOpt[Prompt Optimization]
+        QualityTrends[Quality Trends]
+    end
+    
+    Input --> Processing
+    Processing --> Storage
+    Storage --> Analytics
+    Analytics --> Processing
+    
+    style Input fill:#E3F2FD
+    style Processing fill:#F1F8E9
+    style Storage fill:#FFF3E0
+    style Analytics fill:#FCE4EC
 ```
 
 ## Features
 
-- **Centralized LLM Architecture**: Single Ollama instance handles all language processing
-- **Character-Specific Prompts**: Unique personalities maintained through specialized prompt templates
-- **Resource Efficient**: ~66% reduction in memory usage compared to distributed LLM setup
-- Three distinct bot personalities:
+- **🧠 Advanced AI Architecture**: Centralized LLM with sophisticated coordination and quality systems
+- **🎯 Automatic Quality Improvement**: Supervised fine-tuning with LLM-based assessment and optimization
+- **🛡️ Quality Control**: Pre-send filtering ensures only high-quality responses reach users
+- **🔍 RAG-Enhanced Responses**: Context-aware responses using Family Guy universe knowledge
+- **🌱 Organic Conversations**: Natural conversation initiation based on context and patterns
+- **📊 Comprehensive Analytics**: Real-time performance monitoring and improvement tracking
+- **⚡ Resource Efficient**: ~66% reduction in memory usage compared to distributed LLM setup
+- **🎭 Three Distinct Personalities**:
   - **Peter**: Humorous, dim-witted, with tangents and "Heheheh" interjections
   - **Brian**: Intellectual, sarcastic, sophisticated vocabulary and cultural references
   - **Stewie**: Evil genius baby with British accent, scientific knowledge, and megalomaniacal plans
-- **Simplified Bot Architecture**: Bots handle only Discord interactions, not LLM processing
-- **Containerized Microservices**: Each component runs in isolated containers
-- **GPU-Accelerated Responses**: Leverages host Ollama for fast generation
-- **RAG System**: Context-aware responses using Chroma DB vector store
-- **Persistent Conversations**: MongoDB stores complete conversation history
-- **Multi-Bot Interactions**: Natural conversation flow between characters
-- **Automated Conversations**: Intelligent organic conversation feature that initiates natural conversations based on context and conversation flow
-- **Dead Letter Queue**: Robust error handling and message retry system
-- **Basic Health Checks**: Health endpoints for service monitoring
+- **🐳 Containerized Microservices**: Each component runs in isolated containers
+- **🚀 GPU-Accelerated Responses**: Leverages host Ollama for fast generation
+- **💾 Persistent Everything**: MongoDB stores conversations, ratings, prompts, and metrics
+- **🔄 Multi-Bot Interactions**: Natural conversation flow between characters
+- **⚠️ Robust Error Handling**: Dead Letter Queue with intelligent retry mechanisms
+- **🏥 Health Monitoring**: Comprehensive health checks for all system components
 
 ## Architecture Benefits
 
-### Centralized LLM Processing
+### 🎯 Continuous Improvement
+- **Self-Learning System**: Automatically improves character accuracy without manual intervention
+- **Quality Assurance**: Every response is pre-screened for quality before reaching users
+- **Data-Driven Optimization**: Uses accumulated feedback to optimize character prompts
+- **Safe Innovation**: A/B testing ensures changes only improve the system
+
+### 🧠 Intelligent Coordination
+- **Context-Aware Selection**: Who responds is determined by conversation context and character expertise
+- **Natural Flow**: Conversations feel organic rather than scripted or random
+- **Character Balance**: Ensures fair participation across all characters
+- **Dynamic Adaptation**: System learns from conversation patterns over time
+
+### 🔍 Enhanced Knowledge
+- **Universe-Aware**: Responses incorporate deep Family Guy universe knowledge
+- **Context Integration**: RAG system seamlessly weaves relevant information into conversations
+- **Auto-Updating**: Weekly crawls keep knowledge base current
+- **Multi-Purpose RAG**: Enhances responses, coordination decisions, and conversation starters
+
+### ⚡ Performance & Reliability
 - **Resource Efficiency**: Single LLM instance instead of three separate ones
-- **Consistency**: Unified prompt management and response processing
-- **Maintainability**: Single point for LLM configuration and updates
-- **Scalability**: Easier to implement load balancing and caching
-
-### Simplified Bot Design
-- **Focus**: Bots handle only Discord interactions
-- **Reliability**: Reduced complexity means fewer failure points
-- **Performance**: Faster startup and lower resource usage per bot
-- **Debugging**: Easier to troubleshoot Discord-specific issues
-
-### Enhanced Control
-- **Rate Limiting**: Centralized control over LLM usage
-- **Safety**: Single point for content filtering and moderation
-- **Monitoring**: Unified metrics and logging for LLM operations
-- **Cost Management**: Better tracking of token usage and API calls
-
-### RAG Integration Decision
-- **Current Approach**: RAG system integrated within orchestrator for operational simplicity
-- **Benefits**: Zero-latency context retrieval, simpler deployment, unified error handling
-- **Future Consideration**: RAG can be extracted to separate service if scaling demands require it
-- **Design**: RAG interface abstracted to enable future separation without major refactoring
+- **Fault Tolerance**: System continues working even when components fail
+- **Graceful Degradation**: Quality degrades gracefully rather than failing completely
+- **Comprehensive Monitoring**: Real-time tracking of all system components
 
 ## Project Structure
 ```
@@ -237,6 +504,23 @@ discord-pg-bot/
    # OPTIONAL: Ollama Configuration (defaults provided)
    OLLAMA_BASE_URL=http://host.docker.internal:11434
    
+   # OPTIONAL: Supervised Fine-Tuning System Configuration
+   FINE_TUNING_ENABLED=true                    # Enable/disable automatic optimization
+   OPTIMIZATION_THRESHOLD=0.7                  # Trigger optimization when avg rating < 0.7
+   MIN_RATINGS_FOR_OPTIMIZATION=10             # Minimum ratings before optimization
+   AB_TEST_PERCENTAGE=0.2                      # 20% traffic for A/B testing optimized prompts
+
+   # OPTIONAL: Quality Control System Configuration
+   QUALITY_CONTROL_ENABLED=true                # Enable/disable pre-send quality filtering
+   QUALITY_CONTROL_MIN_RATING=3.0             # Minimum acceptable rating (1-5)
+   QUALITY_CONTROL_MAX_RETRIES=3              # Max retries for quality improvement
+
+   # OPTIONAL: Dead Letter Queue Configuration
+   DLQ_MAX_RETRY_ATTEMPTS=3                   # Maximum retry attempts for failed messages
+   DLQ_RETRY_DELAY_BASE=2.0                   # Base delay for exponential backoff
+   DLQ_MAX_RETRY_DELAY=300                    # Maximum delay between retries (seconds)
+   DLQ_RETRY_WORKER_INTERVAL=60               # How often to check for retryable messages
+   
    # OPTIONAL: Organic Conversation Tuning
    CONVERSATION_SILENCE_THRESHOLD_MINUTES=30  # Minutes of silence before considering new conversation
    MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS=10  # Minimum minutes between organic attempts
@@ -315,12 +599,44 @@ You can connect using MongoDB Compass or any other MongoDB client using these cr
 ### Multi-Bot Conversations
 When you interact with any bot:
 1. The orchestrator receives and processes the message
-2. The primary bot generates its response
-3. Other bots may join the conversation naturally
-4. The orchestrator manages the conversation flow and timing
-5. All conversations are stored in MongoDB for context
+2. **Quality Control**: The system ensures the response meets quality standards before sending
+3. **LLM Auto-Assessment**: Every response is automatically evaluated for character accuracy
+4. **Intelligent Selection**: The LLM coordinator determines the most appropriate character to respond
+5. **RAG Enhancement**: Relevant Family Guy universe context is incorporated into responses
+6. **Response Generation**: High-quality, character-accurate response is delivered
+7. **Continuous Learning**: Response quality data is used to improve future responses
+8. All conversations are stored in MongoDB for context and learning
 
-### Automated Conversations
+### 🎯 Supervised Fine-Tuning System
+The system automatically improves character accuracy through continuous learning:
+
+#### Automatic Operation (No Manual Work Required)
+- **Every Response Evaluated**: LLM automatically assesses each response for character accuracy (1-5 scale)
+- **Quality Control**: Only responses scoring ≥3.0/5 are sent to users (configurable)
+- **Automatic Optimization**: When average ratings drop below 0.7, prompts are automatically optimized
+- **A/B Testing**: New optimized prompts are safely tested on 20% of traffic before full deployment
+- **Performance Tracking**: Real-time monitoring of character accuracy and improvement trends
+
+#### Manual Rating (Optional Enhancement)
+You can also provide manual feedback to enhance the learning:
+```bash
+# Rate a character response via API
+curl -X POST http://localhost:5003/rate_response -H "Content-Type: application/json" -d '{
+  "character_name": "Peter",
+  "response_text": "Hehehehehe! Holy crap, that\''s awesome!",
+  "rating": 5,
+  "feedback": "Perfect Peter voice with signature laugh and catchphrase"
+}'
+```
+
+#### Fine-Tuning API Endpoints
+- `GET /fine_tuning_stats` - Overall system performance statistics
+- `GET /optimization_report?days=7` - Character optimization reports
+- `GET /quality_control_status` - Quality control statistics and configuration
+- `POST /trigger_optimization` - Manually trigger prompt optimization
+- `GET /prompt_performance?character=Peter&days=30` - Detailed character performance metrics
+
+### 🌱 Automated Conversations
 The system includes an intelligent organic conversation feature that initiates natural conversations based on context and conversation flow:
 - **Context-Driven Initiation**: Conversations start based on natural triggers rather than rigid schedules
 - **Intelligent Pattern Analysis**: Detects conversation endings, follow-up opportunities, and silence periods
@@ -331,6 +647,35 @@ The system includes an intelligent organic conversation feature that initiates n
 - **Post-Response Analysis**: Checks for follow-up opportunities after each conversation response
 - Helps maintain channel activity naturally without artificial scheduling
 
+### 🔍 RAG System Management
+The system automatically manages Family Guy universe knowledge:
+- **Weekly Auto-Crawl**: Automatically updates Family Guy wiki knowledge weekly
+- **Manual Crawl**: Trigger immediate knowledge update:
+  ```bash
+  curl -X POST http://localhost:5003/load_fandom_wiki -H "Content-Type: application/json" -d '{
+    "url": "https://familyguy.fandom.com/wiki/Main_Page",
+    "max_pages": 100,
+    "delay": 1
+  }'
+  ```
+- **Context Integration**: Knowledge seamlessly woven into all responses and conversations
+
+### 📊 Monitoring and Analytics
+Monitor system performance in real-time:
+```bash
+# Check overall system health
+curl http://localhost:5003/health
+
+# Get fine-tuning system statistics
+curl http://localhost:5003/fine_tuning_stats
+
+# Get quality control performance
+curl http://localhost:5003/quality_control_status
+
+# Get character-specific performance metrics
+curl http://localhost:5003/prompt_performance?character=Peter&days=30
+```
+
 ## Technical Details
 
 ### System Components
@@ -340,26 +685,44 @@ The system includes an intelligent organic conversation feature that initiates n
   - **Character Prompts**: Maintains personality-specific prompt templates
   - **RAG Integration**: Context retrieval and augmentation
   - **Dead Letter Queue**: Error handling and message retry system
+  - **Supervised Fine-Tuning System**: Continuous character improvement through automated learning
+  - **Quality Control Agent**: Pre-send response filtering and quality assurance
+  - **Organic Conversation Coordinator**: Natural conversation initiation and management
+  - **LLM Auto-Assessment**: Automatic response quality evaluation
+  - **A/B Testing Engine**: Safe deployment of optimized prompts
 - **Character Bots**: 
   - **Peter Bot** (:5005): Discord interface only, no LLM processing
   - **Brian Bot** (:5002): Discord interface only, no LLM processing  
   - **Stewie Bot** (:5004): Discord interface only, no LLM processing
-- **MongoDB Database**: Stores conversation history and context
-- **Chroma DB**: Vector database for RAG system, storing embeddings for contextual retrieval
-- **Ollama**: Provides centralized AI language model capabilities
-- **RAG System**: Enhances responses with relevant context from the vector database
+- **Storage Systems**:
+  - **MongoDB Database**: Stores conversation history, quality ratings, prompt versions, and performance metrics
+  - **Chroma Vector DB**: Vector database for RAG system, storing Family Guy wiki embeddings
+- **External Dependencies**:
+  - **Ollama**: Provides centralized AI language model capabilities
+  - **Sentence Transformers**: Text embedding generation for RAG system
 
 ### Communication Flow
 1. **Discord Message Reception**: Individual bots receive Discord messages
 2. **Orchestrator Routing**: Messages sent to orchestrator for processing
-3. **Centralized LLM Processing**: 
-   - Orchestrator determines responding character
-   - Applies character-specific prompt template
-   - Retrieves RAG context if relevant
-   - Generates response using centralized Ollama instance
-4. **Response Delivery**: Orchestrator sends generated response back to appropriate bot
-5. **Discord Output**: Bot posts response to Discord channel
-6. **Persistence**: Conversations stored in MongoDB and vectorized for RAG
+3. **Conversation Analysis**: LLM coordinator analyzes message context and conversation history
+4. **Character Selection**: Intelligent selection of most appropriate responding character based on:
+   - Character personality and expertise areas
+   - Recent activity balance
+   - Topic relevance and triggers
+   - RAG context about the conversation topic
+5. **RAG Context Retrieval**: Relevant Family Guy universe knowledge retrieved from vector database
+6. **Quality-Controlled Response Generation**: 
+   - Generate response using character-specific prompts (optimized if available)
+   - LLM auto-assessment evaluates response quality (1-5 scale)
+   - Quality control agent ensures response meets minimum standards (≥3.0/5)
+   - Retry generation if quality insufficient (max 3 attempts)
+7. **Response Delivery**: Approved high-quality response sent to appropriate bot
+8. **Discord Output**: Bot posts response to Discord channel
+9. **Learning and Optimization**: 
+   - Response quality data stored for continuous learning
+   - Background optimization triggers when performance drops
+   - A/B testing validates prompt improvements
+10. **Persistence**: Conversations, ratings, and metrics stored in MongoDB
 
 ### Character Response Generation
 The orchestrator maintains distinct personality prompts for each character:
@@ -382,9 +745,20 @@ The orchestrator maintains distinct personality prompts for each character:
 ### API Endpoints
 
 #### Orchestrator (:5003)
+##### Core Functionality
 - `POST /orchestrate` - **Main endpoint**: Handles all LLM processing and conversation management
 - `GET /health` - Health check with component status
+
+##### RAG System
 - `POST /load_fandom_wiki` - RAG document loading and processing
+
+##### Supervised Fine-Tuning System
+- `POST /rate_response` - Rate character responses (manual or automated)
+- `GET /fine_tuning_stats` - Overall system performance statistics
+- `GET /optimization_report?days=7` - Character optimization reports
+- `GET /prompt_performance?character=Peter&days=30` - Detailed character performance metrics
+- `POST /trigger_optimization` - Manually trigger prompt optimization for character
+- `GET /quality_control_status` - Quality control statistics and configuration
 
 #### Individual Bots (:5002, :5004, :5005)
 - `POST /send_discord_message` - Send orchestrator-generated message to Discord
@@ -442,6 +816,13 @@ Feel free to fork the repository and submit pull requests for any improvements y
 - **Enhanced security and authentication layer**
 - **Separate message queue system**
 - **Advanced performance monitoring and analytics**
+
+## Documentation
+
+For detailed information about specific systems:
+- **[Supervised Fine-Tuning System Guide](docs/FINE_TUNING_GUIDE.md)** - Complete documentation on the automatic quality improvement system
+- **[Architecture Validation](tests/test_architecture_validation.py)** - Automated testing and validation
+- **[Performance Benchmarking](scripts/performance_benchmark.py)** - System performance testing
 
 ## License
 
