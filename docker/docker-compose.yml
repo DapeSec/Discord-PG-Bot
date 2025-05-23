@@ -40,6 +40,13 @@ services:
       - MONGO_COLLECTION_NAME=conversations
       - ORCHESTRATOR_HOST=0.0.0.0
       - ORCHESTRATOR_PORT=5003
+      # Bot API URLs for Docker networking
+      - PETER_BOT_DISCORD_SEND_API_URL=http://peter:5005/send_discord_message
+      - PETER_BOT_INITIATE_API_URL=http://peter:5005/initiate_conversation
+      - BRIAN_BOT_DISCORD_SEND_API_URL=http://brian:5002/send_discord_message
+      - BRIAN_BOT_INITIATE_API_URL=http://brian:5002/initiate_conversation
+      - STEWIE_BOT_DISCORD_SEND_API_URL=http://stewie:5004/send_discord_message
+      - STEWIE_BOT_INITIATE_API_URL=http://stewie:5004/initiate_conversation
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

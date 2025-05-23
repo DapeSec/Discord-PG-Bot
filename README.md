@@ -93,7 +93,7 @@ graph TD
 - **RAG System**: Context-aware responses using Chroma DB vector store
 - **Persistent Conversations**: MongoDB stores complete conversation history
 - **Multi-Bot Interactions**: Natural conversation flow between characters
-- **Automated Conversations**: Daily scheduled interactions for continuous engagement
+- **Automated Conversations**: Intelligent organic conversation feature that initiates natural conversations based on context and conversation flow
 - **Dead Letter Queue**: Robust error handling and message retry system
 - **Basic Health Checks**: Health endpoints for service monitoring
 
@@ -116,6 +116,12 @@ graph TD
 - **Safety**: Single point for content filtering and moderation
 - **Monitoring**: Unified metrics and logging for LLM operations
 - **Cost Management**: Better tracking of token usage and API calls
+
+### RAG Integration Decision
+- **Current Approach**: RAG system integrated within orchestrator for operational simplicity
+- **Benefits**: Zero-latency context retrieval, simpler deployment, unified error handling
+- **Future Consideration**: RAG can be extracted to separate service if scaling demands require it
+- **Design**: RAG interface abstracted to enable future separation without major refactoring
 
 ## Project Structure
 ```
@@ -208,20 +214,40 @@ discord-pg-bot/
    ```
 
 3. **Configure Environment**
-   Create a `.env` file in the project root:
+   Create a `.env` file in the project root with these required variables:
    ```
-   # Discord Bot Tokens
+   # REQUIRED: Discord Bot Tokens
    DISCORD_BOT_TOKEN_PETER=your_peter_bot_token_here
    DISCORD_BOT_TOKEN_BRIAN=your_brian_bot_token_here
    DISCORD_BOT_TOKEN_STEWIE=your_stewie_bot_token_here
 
-   # MongoDB Configuration
-   MONGO_URI=mongodb://mongodb:27017/
+   # REQUIRED: Bot Mention Strings (get these after creating bots)
+   PETER_BOT_MENTION_STRING=<@1234567890123456789>
+   BRIAN_BOT_MENTION_STRING=<@1234567890123456789>
+   STEWIE_BOT_MENTION_STRING=<@1234567890123456789>
+
+   # REQUIRED: Default Discord Channel for Organic Conversations
+   DEFAULT_DISCORD_CHANNEL_ID=1234567890123456789
+
+   # OPTIONAL: MongoDB Configuration (defaults provided)
+   MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
    MONGO_DB_NAME=discord_bot_conversations
    MONGO_COLLECTION_NAME=conversations
 
-   # Ollama Configuration
+   # OPTIONAL: Ollama Configuration (defaults provided)
    OLLAMA_BASE_URL=http://host.docker.internal:11434
+   
+   # OPTIONAL: Organic Conversation Tuning
+   CONVERSATION_SILENCE_THRESHOLD_MINUTES=30  # Minutes of silence before considering new conversation
+   MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS=10  # Minimum minutes between organic attempts
+   
+   # OPTIONAL: RAG Configuration for Family Guy Wiki
+   FANDOM_WIKI_START_URL=https://familyguy.fandom.com/wiki/Main_Page
+   FANDOM_WIKI_MAX_PAGES=100
+   FANDOM_WIKI_CRAWL_DELAY=1
+
+   # Note: Bot API URLs are automatically configured in Docker
+   # Only set these if running outside Docker containers
    ```
 
 ## Docker Setup
@@ -295,11 +321,15 @@ When you interact with any bot:
 5. All conversations are stored in MongoDB for context
 
 ### Automated Conversations
-The system includes an automated feature that initiates random conversations throughout the day:
-- Configurable number of daily conversations
-- Dynamic conversation starters based on context
-- Natural interaction between characters
-- Helps maintain channel activity
+The system includes an intelligent organic conversation feature that initiates natural conversations based on context and conversation flow:
+- **Context-Driven Initiation**: Conversations start based on natural triggers rather than rigid schedules
+- **Intelligent Pattern Analysis**: Detects conversation endings, follow-up opportunities, and silence periods
+- **Character-Aware Selection**: Uses the same advanced coordinator that handles responses to choose conversation initiators
+- **RAG-Enhanced Starters**: Generates contextual conversation starters using Family Guy universe knowledge
+- **Natural Flow**: Respects conversation cooldowns and avoids interrupting active discussions
+- **Organic Monitoring**: Continuously monitors for conversation opportunities every 5 minutes
+- **Post-Response Analysis**: Checks for follow-up opportunities after each conversation response
+- Helps maintain channel activity naturally without artificial scheduling
 
 ## Technical Details
 
@@ -358,7 +388,7 @@ The orchestrator maintains distinct personality prompts for each character:
 
 #### Individual Bots (:5002, :5004, :5005)
 - `POST /send_discord_message` - Send orchestrator-generated message to Discord
-- `POST /initiate_conversation` - Start new conversation (scheduled conversations)
+- `POST /initiate_conversation` - Start new conversation (organic conversations)
 - `GET /health` - Bot health and Discord connection status
 - ~~`POST /generate_llm_response`~~ - **REMOVED** (now handled by orchestrator)
 
@@ -406,7 +436,7 @@ Feel free to fork the repository and submit pull requests for any improvements y
 - Advanced conversation orchestration
 - Custom personality fine-tuning
 - Extended conversation history analysis
-- Improved automated conversation triggers
+- Enhanced organic conversation triggers and pattern detection
 - **Metrics collection and monitoring system**
 - **Centralized alerting and notification system**
 - **Enhanced security and authentication layer**
@@ -605,6 +635,16 @@ ARCHITECTURE SUMMARY:
 
    # Ollama Configuration
    OLLAMA_BASE_URL=http://host.docker.internal:11434
+   
+   # Organic Conversation Configuration (Optional)
+   CONVERSATION_SILENCE_THRESHOLD_MINUTES=30  # Minutes of silence before considering new conversation
+   MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS=10  # Minimum minutes between organic attempts
+   DEFAULT_DISCORD_CHANNEL_ID=your_default_channel_id  # For organic conversations
+   
+   # RAG System Configuration
+   FANDOM_WIKI_START_URL=https://familyguy.fandom.com/wiki/Main_Page
+   FANDOM_WIKI_MAX_PAGES=100
+   FANDOM_WIKI_CRAWL_DELAY=1
    ```
 
 3. **Build and Run Containers**
@@ -653,69 +693,3 @@ docker-compose logs -f orchestrator
 
 2. **GPU Access**
    - Verify GPU is recognized by Ollama: `nvidia-smi`
-   - Check Ollama logs for GPU initialization
-   - Ensure CUDA drivers are installed
-   - For Docker, ensure nvidia-container-toolkit is installed
-   - Check GPU memory usage isn't maxed out
-
-3. **MongoDB Connection Issues**
-   - Verify MongoDB container is running: `docker ps | grep mongodb`
-   - Check MongoDB logs: `docker-compose logs mongodb`
-   - Ensure correct credentials in .env file
-   - Check if MongoDB port is not conflicting with local installation
-
-4. **Bot Communication Issues**
-   - Verify all services are running: `docker-compose ps`
-   - Check individual bot logs: `docker-compose logs <service_name>`
-   - Ensure Discord bot tokens are valid
-   - Check Discord bot permissions
-   - Verify network connectivity between containers
-
-5. **Performance Issues**
-   - Monitor container resource usage: `docker stats`
-   - Check host system resources
-   - Verify GPU utilization if applicable
-   - Consider adjusting container resource limits
-   - Monitor MongoDB performance metrics
-
-### Logs Location
-- Container logs: `docker-compose logs`
-- Application logs: `./logs/` directory
-- Ollama logs: System-dependent location
-  - Linux: `/var/log/ollama.log`
-  - Windows: Event Viewer
-  - macOS: Console.app
-
-### Getting Help
-- Open an issue on GitHub
-- Check existing issues for similar problems
-- Join our Discord community for support
-- Review the documentation
-
-## License
-
-This project is licensed under the MIT License.
-
-```text
-MIT License
-
-Copyright (c) 2024 DapeSec
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-``` 

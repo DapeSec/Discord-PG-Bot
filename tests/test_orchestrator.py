@@ -228,5 +228,117 @@ class TestOrchestrator(unittest.TestCase):
                                content_type='application/json')
         self.assertEqual(response.status_code, 400)
 
+class TestOrganicConversationCoordinator(unittest.TestCase):
+    """Test suite for the new Organic Conversation Coordinator system."""
+    
+    def setUp(self):
+        """Set up test fixtures for organic conversation coordinator."""
+        from src.app.orchestrator.server import OrganicConversationCoordinator
+        self.coordinator = OrganicConversationCoordinator()
+        
+    @patch('src.app.orchestrator.server.conversations_collection')
+    def test_should_start_organic_conversation_with_recent_activity(self, mock_collection):
+        """Test that organic conversations are not started when there's recent activity."""
+        from datetime import datetime, timedelta
+        
+        # Mock recent messages (within threshold)
+        recent_time = datetime.now() - timedelta(minutes=15)
+        mock_collection.find.return_value = [
+            {"content": "Recent message", "timestamp": recent_time}
+        ]
+        
+        result = self.coordinator.should_start_organic_conversation("test_channel")
+        self.assertFalse(result)
+        
+    @patch('src.app.orchestrator.server.conversations_collection')
+    def test_should_start_organic_conversation_after_silence(self, mock_collection):
+        """Test that organic conversations are started after sufficient silence."""
+        from datetime import datetime, timedelta
+        
+        # Mock no recent messages, but old last message
+        old_time = datetime.now() - timedelta(minutes=45)
+        mock_collection.find.return_value = []  # No recent messages
+        mock_collection.find_one.return_value = {
+            "content": "Old message", 
+            "timestamp": old_time
+        }
+        
+        result = self.coordinator.should_start_organic_conversation("test_channel")
+        self.assertTrue(result)
+        
+    def test_analyze_conversation_for_organic_triggers(self):
+        """Test conversation pattern analysis for organic triggers."""
+        # Test conversation ending phrases
+        conversation_with_ending = [
+            {"content": "Well, see you later everyone!", "timestamp": "2024-01-01"}
+        ]
+        
+        result = self.coordinator._analyze_conversation_for_organic_triggers(conversation_with_ending)
+        self.assertTrue(result)
+        
+        # Test follow-up triggers
+        conversation_with_follow_up = [
+            {"content": "That reminds me of something interesting...", "timestamp": "2024-01-01"}
+        ]
+        
+        result = self.coordinator._analyze_conversation_for_organic_triggers(conversation_with_follow_up)
+        self.assertTrue(result)
+        
+        # Test normal conversation (no triggers)
+        normal_conversation = [
+            {"content": "Just a normal message", "timestamp": "2024-01-01"}
+        ]
+        
+        result = self.coordinator._analyze_conversation_for_organic_triggers(normal_conversation)
+        self.assertFalse(result)
+        
+    @patch('src.app.orchestrator.server.select_conversation_initiator_intelligently')
+    @patch('src.app.orchestrator.server.generate_conversation_starter')
+    @patch('requests.post')
+    @patch('src.app.orchestrator.server.conversations_collection')
+    def test_initiate_organic_conversation(self, mock_collection, mock_post, mock_starter, mock_initiator):
+        """Test successful organic conversation initiation."""
+        # Mock dependencies
+        mock_collection.find.return_value = []
+        mock_initiator.return_value = "Peter"
+        mock_starter.return_value = "Hehehe, anyone want to talk about something random?"
+        mock_post.return_value.status_code = 200
+        
+        result = self.coordinator.initiate_organic_conversation("test_channel")
+        
+        self.assertTrue(result)
+        mock_initiator.assert_called()
+        mock_starter.assert_called()
+        mock_post.assert_called()
+        
+    @patch('src.app.orchestrator.server.crawl_status_collection')
+    @patch('src.app.orchestrator.server.crawl_and_process_documents')
+    def test_weekly_crawl_check(self, mock_crawl, mock_collection):
+        """Test weekly RAG crawl functionality."""
+        from datetime import datetime, timedelta
+        
+        # Mock old crawl timestamp (more than 7 days ago)
+        old_time = datetime.now() - timedelta(days=8)
+        mock_collection.find_one.return_value = {"timestamp": old_time}
+        
+        self.coordinator.check_weekly_crawl()
+        
+        # Should trigger a crawl
+        mock_crawl.assert_called()
+        mock_collection.update_one.assert_called()
+        
+    def test_cooldown_between_organic_attempts(self):
+        """Test minimum time cooldown between organic conversation attempts."""
+        from datetime import datetime, timedelta
+        
+        # Set recent attempt time
+        self.coordinator.last_organic_attempt = datetime.now() - timedelta(minutes=5)
+        
+        # Should not start another conversation too soon
+        with patch('src.app.orchestrator.server.conversations_collection') as mock_collection:
+            mock_collection.find.return_value = []  # No recent activity
+            result = self.coordinator.should_start_organic_conversation("test_channel")
+            self.assertFalse(result)
+
 if __name__ == '__main__':
     unittest.main() 

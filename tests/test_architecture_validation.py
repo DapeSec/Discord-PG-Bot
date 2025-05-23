@@ -313,6 +313,40 @@ class ArchitectureValidator:
             self.log_result("Architecture Benefits Test", False, f"Error: {e}")
             return False
 
+    def test_organic_conversation_system(self) -> bool:
+        """Test organic conversation coordinator functionality."""
+        print("\n🌱 Testing Organic Conversation System...")
+        
+        try:
+            # Test that the organic conversation coordinator is accessible
+            # We can't easily test the full functionality without waiting for timeouts,
+            # but we can verify the system is initialized
+            
+            # Test health endpoint includes organic conversation status
+            response = requests.get(f"{ORCHESTRATOR_URL}/health", timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                components = data.get("components", {})
+                
+                # Check if orchestrator is healthy (which includes organic coordinator)
+                if "mongodb" in components and "vectorstore" in components:
+                    self.log_result("Organic Conversation System", True, 
+                                  "Orchestrator healthy with required components")
+                    return True
+                else:
+                    self.log_result("Organic Conversation System", False,
+                                  "Missing required components for organic conversations")
+                    return False
+            else:
+                self.log_result("Organic Conversation System", False,
+                              f"Health check failed: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            self.log_result("Organic Conversation System", False, f"Error: {e}")
+            return False
+
     def run_all_tests(self) -> None:
         """Run all architecture validation tests."""
         print("=" * 70)
@@ -325,7 +359,8 @@ class ArchitectureValidator:
             self.test_rag_system_integration,
             self.test_error_handling,
             self.test_bot_discord_interfaces,
-            self.test_architecture_benefits
+            self.test_architecture_benefits,
+            self.test_organic_conversation_system
         ]
         
         overall_success = True
