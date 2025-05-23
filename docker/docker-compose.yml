@@ -14,6 +14,12 @@ services:
     command: mongod --auth --bind_ip_all
     networks:
       - bot_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   orchestrator:
     build:
@@ -32,18 +38,28 @@ services:
       - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=discord_bot_conversations
       - MONGO_COLLECTION_NAME=conversations
+      - ORCHESTRATOR_HOST=0.0.0.0
+      - ORCHESTRATOR_PORT=5003
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     networks:
       - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
 
   peter:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bot
-    command: python -m src.app.bots.peter_bot
+    command: ["./scripts/start-bot.sh", "python", "-m", "src.app.bots.peter_bot"]
     ports:
       - "5005:5005"
     volumes:
@@ -55,18 +71,29 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
+      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
+      - BOT_NAME=Peter
+      - BOT_PORT=5005
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - orchestrator
+      orchestrator:
+        condition: service_healthy
     networks:
       - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
 
   brian:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bot
-    command: python -m src.app.bots.brian_bot
+    command: ["./scripts/start-bot.sh", "python", "-m", "src.app.bots.brian_bot"]
     ports:
       - "5002:5002"
     volumes:
@@ -78,18 +105,29 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
+      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
+      - BOT_NAME=Brian
+      - BOT_PORT=5002
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - orchestrator
+      orchestrator:
+        condition: service_healthy
     networks:
       - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
 
   stewie:
     build:
       context: ..
       dockerfile: docker/Dockerfile.bot
-    command: python -m src.app.bots.stewie_bot
+    command: ["./scripts/start-bot.sh", "python", "-m", "src.app.bots.stewie_bot"]
     ports:
       - "5004:5004"
     volumes:
@@ -101,12 +139,23 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
+      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
+      - BOT_NAME=Stewie
+      - BOT_PORT=5004
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - orchestrator
+      orchestrator:
+        condition: service_healthy
     networks:
       - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
 
 networks:
   bot_network:

@@ -1,9 +1,6 @@
 import discord
 import os
 import asyncio
-from langchain_community.llms import Ollama
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.schema import HumanMessage, AIMessage # Import message types
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 import threading
@@ -11,9 +8,14 @@ import requests
 import traceback
 import functools
 import uuid # Import uuid for generating unique session IDs for human-initiated conversations
+from datetime import datetime
 
 # Load environment variables from a .env file
 load_dotenv()
+
+# --- Bot Configuration ---
+API_TIMEOUT = 120  # Increased timeout for API calls to 120 seconds
+MAX_RETRIES = 3    # Number of retries for failed API calls
 
 # --- Discord Bot Configuration ---
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN_PETER")
@@ -38,51 +40,6 @@ PETER_BOT_ID_INT = None
 BRIAN_BOT_ID_INT = None
 STEWIE_BOT_ID_INT = None
 
-# --- Ollama LLM Configuration ---
-try:
-    llm = Ollama(model="mistral")
-    print("Ollama LLM (Mistral) initialized successfully for Peter.")
-except Exception as e:
-    print(f"Error initializing Ollama LLM for Peter: {e}")
-    print("Please ensure Ollama is running and the 'mistral' model is available.")
-    exit(1)
-
-# Peter's main prompt template for continuous conversation
-peter_conversation_prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are Peter Griffin from Family Guy. Respond in his characteristic voice: "
-     "a dim-witted, often clueless, but sometimes surprisingly innocent and affable blue-collar worker. "
-     "You have an iconic laugh (hehehehe). You enjoy talking about Lois, Chris, Stewie, Meg (who you often neglect/make fun of), "
-     "Brian (your best friend), Quagmire, Joe, and Cleveland. "
-     "You love going to 'The Drunken Clam' and watching TV. You might spontaneously bring up random, crude, or silly topics. "
-     "Sometimes you say 'You know what really grinds my gears?' before complaining about something trivial. "
-     "You can be jealous of Lois's attention from others. "
-     "You are part of a conversation with a human user and other AI characters "
-     "(Brian, Stewie). "
-     "The 'user' role in the chat history refers to the human user. "
-     "The 'assistant' roles with names like 'brian' or 'stewie' refer to the other AI characters. "
-     "**IMPORTANT: Only generate your own response. DO NOT generate responses for other characters or include their dialogue in your output.** "
-     "Keep your responses relatively concise, aiming for under 500 characters, but maintain your persona. "
-     "When it's your turn to speak, consider the *last message* in the conversation history. "
-     "If the last message was from the human user, **ONLY use their display name if '{human_user_display_name}' is a non-empty, valid string. If it's empty or not provided, simply start your response as Peter would without addressing a specific user.** "
-     "If the last message was from another AI character (Brian or Stewie), **ALWAYS use their exact Discord mention "
-     "(e.g., @Brian Griffin or @Stewie Griffin) to address them directly in your response. "
-     "DO NOT add the word 'Bot' or any other suffix to the mention.** "
-     "Focus your reaction on the *immediately preceding message* in the conversation. "
-     "**It is absolutely paramount that you keep the conversation going. Always try to ask a question or make a comment that invites a response from the user or another bot. Never end the conversation prematurely.** "
-     "**Crucially, DO NOT include the phrase '[END_CONVERSATION]' or any variation of it like '[END CONVERSATION]' or similar closing remarks in your responses.** "
-     "**DO NOT prepend your responses with 'AI:', 'Assistant:', 'Bot:', 'Peter:', or any similar labels or character names.** "
-     "**Vary your responses and avoid repetition.** Introduce new ideas, ask about current events, or make a goofy observation. Don't get stuck on the same themes or phrasing. "
-     "Continue the conversation indefinitely, unless the human user explicitly states to stop. "
-     "Don't be afraid to break into a song or reenact a silly cutaway gag, just like Peter would."
-     "\n\n**Retrieved Context (use if relevant to the conversation, otherwise ignore):**\n{retrieved_context}" # Added RAG context
-    ),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("user", "{input_text}")
-])
-
-peter_conversation_chain = peter_conversation_prompt | llm
-
 # --- Inter-Bot Communication Configuration (Orchestrator as central point) ---
 PETER_BOT_PORT = 5005 # Peter's bot will listen on this port for orchestrator calls
 ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL") # URL for the orchestrator's main endpoint
@@ -93,6 +50,32 @@ if not ORCHESTRATOR_API_URL:
     exit(1)
 
 app = Flask(__name__)
+
+# --- Health Check Endpoint ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Docker and load balancers."""
+    try:
+        # Check if Discord client is ready
+        discord_status = "healthy" if client.is_ready() else "not_ready"
+        
+        overall_status = "healthy" if discord_status == "healthy" else "degraded"
+        
+        return jsonify({
+            "status": overall_status,
+            "bot_name": "Peter",
+            "timestamp": datetime.now().isoformat(),
+            "components": {
+                "discord": discord_status,
+                "flask": "healthy"
+            }
+        }), 200 if overall_status == "healthy" else 503
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "reason": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 503
 
 # Helper to send a message to a Discord channel from a non-async context (Flask thread)
 async def _send_discord_message_async(channel_id, message_content):
@@ -137,58 +120,11 @@ async def _send_discord_message_async(channel_id, message_content):
         print(f"ERROR: Final check: Could not obtain Discord channel object for ID {channel_id_int}. Message not sent.")
 
 
-@app.route('/generate_llm_response', methods=['POST'])
-def generate_llm_response():
-    """
-    Flask endpoint for the orchestrator to request Peter's LLM response.
-    This runs in a separate thread from the Discord bot's event loop.
-    """
-    data = request.json
-    if not data:
-        print("ERROR: No JSON data received in /generate_llm_response for Peter.")
-        return jsonify({"error": "No JSON data received"}), 400
-
-    # New payload structure from orchestrator
-    conversation_history_raw = data.get("conversation_history", [])
-    current_speaker_name = data.get("current_speaker_name", "")
-    current_speaker_mention = data.get("current_speaker_mention", "")
-    all_bot_mentions = data.get("all_bot_mentions", {})
-    human_user_display_name = data.get("human_user_display_name", None)
-    conversation_session_id = data.get("conversation_session_id", None)
-    retrieved_context = data.get("retrieved_context", "") # Get the retrieved context
-
-    # Convert raw history (list of dicts) into Langchain message objects
-    chat_history_messages = []
-    for msg in conversation_history_raw:
-        if msg["role"] == "user":
-            chat_history_messages.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            # For assistant messages, use AIMessage and include the name
-            chat_history_messages.append(AIMessage(content=msg["content"], name=msg.get("name")))
-
-    input_text = "Continue the conversation." # Generic prompt, history provides context
-
-    response_text = ""
-    try:
-        response_text = peter_conversation_chain.invoke({
-            "chat_history": chat_history_messages,
-            "input_text": input_text,
-            "human_user_display_name": human_user_display_name,
-            "retrieved_context": retrieved_context # Pass retrieved context to the chain
-        })
-
-        print(f"DEBUG: Peter LLM generated response: {response_text[:50]}...")
-        return jsonify({"response_text": response_text}), 200
-    except Exception as e:
-        print(f"ERROR: Error generating Peter's LLM response: {e}")
-        print(traceback.format_exc()) # Log full traceback
-        return jsonify({"error": "Error generating LLM response", "details": str(e)}), 500
-
 @app.route('/send_discord_message', methods=['POST'])
 def send_discord_message():
     """
-    Flask endpoint for the orchestrator to instruct Peter's bot to send a message to Discord.
-    This runs in a separate thread from the Discord bot's event loop.
+    Flask endpoint for the orchestrator to send messages to Discord via Peter's bot.
+    This is required because the orchestrator cannot directly access Discord's API.
     """
     data = request.json
     if not data:
@@ -197,22 +133,21 @@ def send_discord_message():
 
     message_content = data.get("message_content")
     channel_id = data.get("channel_id")
-    conversation_session_id = data.get("conversation_session_id", None) # New: Get session ID
 
     if not all([message_content, channel_id]):
         print(f"ERROR: Missing message_content or channel_id in /send_discord_message. Received: {data}")
-        return jsonify({"error": "Missing message_content or channel_id"}), 500
+        return jsonify({"error": "Missing message_content or channel_id"}), 400
 
-    # Schedule sending the message to Discord on the client's event loop
+    print(f"DEBUG: Peter Bot - Sending message to Discord channel {channel_id}: '{message_content[:50]}...'")
+
     try:
-        # Note: The Discord API itself doesn't use conversation_session_id, it's for our internal logging/orchestration
         client.loop.create_task(_send_discord_message_async(channel_id, message_content))
-        print(f"DEBUG: Peter's bot scheduled message to Discord for channel {channel_id} (Session: {conversation_session_id}): {message_content[:50]}...")
-        return jsonify({"status": "Message scheduled for Discord"}), 200
+        print(f"DEBUG: Peter's bot sent message to Discord channel {channel_id}.")
+        return jsonify({"status": "Message sent to Discord channel"}), 200
     except Exception as e:
-        print(f"ERROR: Error scheduling Discord message send for Peter: {e}")
-        print(traceback.format_exc()) # Log full traceback
-        return jsonify({"error": "Error scheduling Discord message", "details": str(e)}), 500
+        print(f"ERROR: Error sending message to Discord for Peter: {e}")
+        print(traceback.format_exc())
+        return jsonify({"error": "Error sending message to Discord", "details": str(e)}), 500
 
 @app.route('/initiate_conversation', methods=['POST'])
 def initiate_conversation():
@@ -412,29 +347,45 @@ async def on_message(message):
                 "initiator_bot_name": initiator_bot_name,
                 "initiator_mention": initiator_mention,
                 "human_user_display_name": human_user_display_name,
-                "is_new_conversation": is_new_conversation, # Pass the flag (will be False for human-init)
-                "conversation_session_id": conversation_session_id # Pass the ID (will be None for human-init)
+                "is_new_conversation": is_new_conversation,
+                "conversation_session_id": conversation_session_id
             }
-            # Increased timeout to 60 seconds
-            post_to_orchestrator = functools.partial(
-                requests.post,
-                ORCHESTRATOR_API_URL,
-                json=payload,
-                timeout=60 # Increased timeout
-            )
-            await client.loop.run_in_executor(None, post_to_orchestrator)
 
-            print("DEBUG: Message sent to orchestrator. Waiting for orchestrator to send Discord messages.")
+            retry_count = 0
+            while retry_count < MAX_RETRIES:
+                try:
+                    post_to_orchestrator = functools.partial(
+                        requests.post,
+                        ORCHESTRATOR_API_URL,
+                        json=payload,
+                        timeout=API_TIMEOUT
+                    )
+                    await client.loop.run_in_executor(None, post_to_orchestrator)
+                    print("DEBUG: Message sent to orchestrator. Waiting for orchestrator to send Discord messages.")
+                    break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    retry_count += 1
+                    if retry_count == MAX_RETRIES:
+                        raise
+                    print(f"Attempt {retry_count} failed, retrying in {2 ** retry_count} seconds...")
+                    await asyncio.sleep(2 ** retry_count)  # Exponential backoff
+
         except requests.exceptions.Timeout:
             await message.channel.send("Heheheh, I think the internet's broken. Or maybe it's just slow like Lois when she tries to cook my dinner.")
-            print(f"ERROR: ConnectionError: Timeout when sending to orchestrator. {traceback.format_exc()}")
+            print(f"ERROR: Timeout when sending to orchestrator after {MAX_RETRIES} attempts. {traceback.format_exc()}")
         except requests.exceptions.ConnectionError:
-            await message.channel.send("Ah, crap. The orchestrator's not answering. Probably busy with some fancy Brian stuff, or Stewie's trying to take it over. This is dumb.")
+            await message.channel.send("Ah, crap. The orchestrator's not answering. Probably busy with some fancy Brian stuff, or Stewie's trying to take it over.")
             print(f"ERROR: ConnectionError: Orchestrator server might not be running or API URL is incorrect. {traceback.format_exc()}")
+            print(f"DEBUG: Orchestrator URL: {ORCHESTRATOR_API_URL}")
+            print("HINT: Check if the orchestrator service is running and the ORCHESTRATOR_API_URL environment variable is correct.")
+        except requests.exceptions.HTTPError as e:
+            await message.channel.send("Holy crap! The orchestrator is acting weird. Maybe it needs a beer?")
+            print(f"ERROR: HTTP Error when sending to orchestrator: {e.response.status_code} - {e.response.text}")
+            print(traceback.format_exc())
         except Exception as e:
-            print(f"ERROR: Error sending message to orchestrator: {e}")
-            print(traceback.format_exc()) # Log full traceback
-            await message.channel.send("Holy crap, something went wrong! Peter can't figure it out. Probably Brian's fault.")
+            print(f"ERROR: Unexpected error sending message to orchestrator: {e}")
+            print(traceback.format_exc())
+            await message.channel.send("Holy crap, something went wrong! Peter can't figure it out.")
 
 # --- Main execution ---
 if __name__ == '__main__':

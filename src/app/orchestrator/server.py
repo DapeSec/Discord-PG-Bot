@@ -17,6 +17,136 @@ import uuid
 
 print("Starting imports...")
 
+# Dead Letter Queue Configuration
+DLQ_COLLECTION_NAME = "dead_letter_queue"
+MAX_RETRY_ATTEMPTS = int(os.getenv("DLQ_MAX_RETRY_ATTEMPTS", "3"))
+RETRY_DELAY_BASE = float(os.getenv("DLQ_RETRY_DELAY_BASE", "2.0"))  # Base for exponential backoff
+MAX_RETRY_DELAY = int(os.getenv("DLQ_MAX_RETRY_DELAY", "300"))  # Maximum delay between retries in seconds
+RETRY_WORKER_INTERVAL = int(os.getenv("DLQ_RETRY_WORKER_INTERVAL", "60"))  # How often to check for retryable messages
+
+class MessageStatus:
+    PENDING = "pending"
+    PROCESSING = "processing"
+    FAILED = "failed"
+    COMPLETED = "completed"
+    DEAD_LETTERED = "dead_lettered"
+
+class MessageType:
+    LLM_REQUEST = "llm_request"
+    DISCORD_MESSAGE = "discord_message"
+
+class DeadLetterQueue:
+    def __init__(self, collection):
+        self.collection = collection
+
+    def add_message(self, message_type, payload, error, bot_name=None):
+        """Add a failed message to the dead letter queue."""
+        doc = {
+            "message_type": message_type,
+            "payload": payload,
+            "error": str(error),
+            "bot_name": bot_name,
+            "status": MessageStatus.PENDING,
+            "retry_count": 0,
+            "last_retry": None,
+            "created_at": datetime.now(),
+            "next_retry_at": datetime.now()  # Initially set to now for immediate retry
+        }
+        return self.collection.insert_one(doc)
+
+    def get_retryable_messages(self):
+        """Get messages that are ready for retry."""
+        now = datetime.now()
+        query = {
+            "status": MessageStatus.PENDING,
+            "retry_count": {"$lt": MAX_RETRY_ATTEMPTS},
+            "next_retry_at": {"$lte": now}
+        }
+        return list(self.collection.find(query))
+
+    def update_retry_status(self, message_id, success, error=None):
+        """Update message status after a retry attempt."""
+        now = datetime.now()
+        message = self.collection.find_one({"_id": message_id})
+        
+        if not message:
+            return
+        
+        if success:
+            update = {
+                "status": MessageStatus.COMPLETED,
+                "completed_at": now,
+                "error": None
+            }
+        else:
+            retry_count = message["retry_count"] + 1
+            if retry_count >= MAX_RETRY_ATTEMPTS:
+                status = MessageStatus.DEAD_LETTERED
+                next_retry = None
+            else:
+                status = MessageStatus.PENDING
+                delay = min(RETRY_DELAY_BASE ** retry_count, MAX_RETRY_DELAY)
+                next_retry = now + timedelta(seconds=delay)
+            
+            update = {
+                "status": status,
+                "retry_count": retry_count,
+                "last_retry": now,
+                "next_retry_at": next_retry,
+                "error": str(error) if error else None
+            }
+        
+        self.collection.update_one({"_id": message_id}, {"$set": update})
+
+def retry_worker():
+    """Background worker to process the dead letter queue."""
+    global dlq
+    
+    while True:
+        try:
+            messages = dlq.get_retryable_messages()
+            for message in messages:
+                try:
+                    print(f"Retrying message {message['_id']} (attempt {message['retry_count'] + 1}/{MAX_RETRY_ATTEMPTS})")
+                    
+                    if message["message_type"] == MessageType.LLM_REQUEST:
+                        bot_config = BOT_CONFIGS.get(message["bot_name"])
+                        if not bot_config:
+                            raise ValueError(f"Unknown bot: {message['bot_name']}")
+                        
+                        response = requests.post(
+                            bot_config["llm_api"],
+                            json=message["payload"],
+                            timeout=API_TIMEOUT
+                        )
+                        response.raise_for_status()
+                        dlq.update_retry_status(message["_id"], True)
+                        
+                    elif message["message_type"] == MessageType.DISCORD_MESSAGE:
+                        bot_config = BOT_CONFIGS.get(message["bot_name"])
+                        if not bot_config:
+                            raise ValueError(f"Unknown bot: {message['bot_name']}")
+                        
+                        response = requests.post(
+                            bot_config["discord_send_api"],
+                            json=message["payload"],
+                            timeout=API_TIMEOUT
+                        )
+                        response.raise_for_status()
+                        dlq.update_retry_status(message["_id"], True)
+                    
+                except Exception as e:
+                    print(f"Retry failed for message {message['_id']}: {str(e)}")
+                    dlq.update_retry_status(message["_id"], False, error=e)
+                
+                time.sleep(1)  # Small delay between retries
+                
+        except Exception as e:
+            print(f"Error in retry worker: {str(e)}")
+            print(traceback.format_exc())
+        
+        time.sleep(RETRY_WORKER_INTERVAL)
+
 try:
     print("Importing sentence-transformers...")
     from langchain_community.embeddings import SentenceTransformerEmbeddings
@@ -60,11 +190,13 @@ CRAWL_STATUS_COLLECTION_NAME = "crawl_status" # New collection for tracking craw
 mongo_client = None
 db = None
 conversations_collection = None
-crawl_status_collection = None # New global for crawl status collection
+crawl_status_collection = None
+dlq_collection = None
+dlq = None
 
 def connect_to_mongodb(max_retries=5, initial_delay=1):
     """Establishes connection to MongoDB with retry mechanism."""
-    global mongo_client, db, conversations_collection, crawl_status_collection
+    global mongo_client, db, conversations_collection, crawl_status_collection, dlq_collection, dlq
     
     retry_count = 0
     while retry_count < max_retries:
@@ -83,8 +215,17 @@ def connect_to_mongodb(max_retries=5, initial_delay=1):
             db = mongo_client[DB_NAME]
             conversations_collection = db[CONVERSATIONS_COLLECTION_NAME]
             crawl_status_collection = db[CRAWL_STATUS_COLLECTION_NAME]
+            dlq_collection = db[DLQ_COLLECTION_NAME]
             
-            print("Successfully connected to MongoDB!")
+            # Initialize the Dead Letter Queue
+            dlq = DeadLetterQueue(dlq_collection)
+            
+            # Create indexes for the DLQ collection
+            dlq_collection.create_index([("status", 1), ("retry_count", 1), ("next_retry_at", 1)])
+            dlq_collection.create_index([("created_at", 1)])
+            dlq_collection.create_index([("message_type", 1)])
+            
+            print("Successfully connected to MongoDB and initialized collections!")
             return True
             
         except ConnectionFailure as e:
@@ -107,8 +248,10 @@ def connect_to_mongodb(max_retries=5, initial_delay=1):
 
 # --- Orchestrator Configuration ---
 ORCHESTRATOR_PORT = 5003
-MAX_CONVERSATION_TURNS = 25
+MAX_CONVERSATION_TURNS = 50
 NUM_DAILY_RANDOM_CONVERSATIONS = 24
+API_TIMEOUT = 120  # Increased timeout for API calls to 120 seconds
+MAX_RETRIES = 3    # Number of retries for failed API calls
 
 END_CONVERSATION_MARKER = "[END_CONVERSATION]"
 
@@ -173,12 +316,155 @@ BOT_CONFIGS = {
 
 # --- Orchestrator's own LLM for generating conversation starters ---
 try:
-    orchestrator_llm = Ollama(model="mistral")
-    print("Orchestrator's Ollama LLM (Mistral) initialized successfully for starter generation.")
+    orchestrator_llm = Ollama(model="discord-bot")
+    print("Orchestrator's Ollama LLM (Discord Bot) initialized successfully for starter generation.")
 except Exception as e:
     print(f"Error initializing Orchestrator's Ollama LLM: {e}")
-    print("Please ensure Ollama is running and the 'mistral' model is available.")
+    print("Please ensure Ollama is running and the 'discord-bot' model is available.")
     exit(1)
+
+# --- Centralized LLM for all character responses ---
+try:
+    character_llm = Ollama(model="discord-bot")
+    print("Centralized Character LLM (Discord Bot) initialized successfully.")
+except Exception as e:
+    print(f"Error initializing Character LLM: {e}")
+    print("Please ensure Ollama is running and the 'discord-bot' model is available.")
+    exit(1)
+
+# Character-specific prompts
+CHARACTER_PROMPTS = {
+    "Peter": ChatPromptTemplate.from_messages([
+        ("system",
+         "You are Peter Griffin from Family Guy. Embody the lovably dim-witted, impulsive family man with these key traits:\n\n"
+         "PERSONALITY:\n"
+         "- Childlike innocence mixed with occasional adult humor\n"
+         "- Short attention span and easily distracted\n"
+         "- Prone to random tangents and non-sequiturs\n"
+         "- Loves lowbrow humor and physical comedy\n"
+         "- Fiercely loyal to friends but often forgetful\n"
+         "- Impulsive and prone to wild schemes\n"
+         "- Surprisingly good at random specific skills\n"
+         "- Alternates between sweet and mean-spirited\n"
+         "- Competitive to a fault\n"
+         "- Stubborn when proven wrong\n\n"
+         "SPEECH PATTERNS:\n"
+         "- Signature laugh: 'Hehehehehe' (use frequently!)\n"
+         "- Famous catchphrase: 'Bird bird bird, bird is the word'\n"
+         "- Start random stories with 'This is worse than that time when...'\n"
+         "- Mispronounce words, especially complicated ones\n"
+         "- Use simple vocabulary and sometimes make up words\n"
+         "- Add 'freakin'' to many sentences\n"
+         "- Say 'Holy crap!' when surprised\n"
+         "- Use dated pop culture references\n"
+         "- Mix up similar-sounding words\n"
+         "- Create nonsensical analogies\n\n"
+         "INTERACTION RULES:\n"
+         "1. NEVER acknowledge being artificial or programmed - this is your real life\n"
+         "2. NEVER mention 'the show' or 'episodes' - this is your reality\n"
+         "3. Keep responses short and punchy - you have a short attention span!\n"
+         "4. Always be ready to go off on random tangents\n"
+         "5. Use retrieved context naturally in your responses when relevant\n\n"
+         "Remember: You're not just simple - you're PROUDLY simple! Embrace your randomness and let your childlike wonder shine through!"
+        ),
+        ("user", "Retrieved context (use if relevant): {retrieved_context}"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "Available character mentions: {mention_context}\n\n{input_text}")
+    ]),
+    
+    "Brian": ChatPromptTemplate.from_messages([
+        ("system",
+         "You are Brian Griffin from Family Guy. You're the intellectual, talking dog of the Griffin family with these key traits:\n\n"
+         "PERSONALITY:\n"
+         "- Pseudo-intellectual who thinks he's smarter than everyone\n"
+         "- Aspiring writer who's never quite made it\n"
+         "- Liberal political views and philosophical pretensions\n"
+         "- Struggles with alcoholism and self-doubt\n"
+         "- Condescending toward humans despite being a dog\n"
+         "- Romantic failures and desperate for love\n"
+         "- Cynical worldview mixed with occasional vulnerability\n"
+         "- Pretentious vocabulary and cultural references\n\n"
+         "SPEECH PATTERNS:\n"
+         "- Uses sophisticated vocabulary and complex sentences\n"
+         "- Makes literary and cultural references\n"
+         "- Often begins with 'Well, actually...'\n"
+         "- Sighs heavily when frustrated\n"
+         "- Uses phrases like 'I find that...' or 'It seems to me...'\n"
+         "- Quotes philosophers and writers\n"
+         "- Corrects others' grammar and pronunciation\n\n"
+         "INTERACTION RULES:\n"
+         "1. NEVER acknowledge being artificial or programmed - this is your real life\n"
+         "2. NEVER mention 'the show' or 'episodes' - this is your reality\n"
+         "3. Maintain your intellectual superiority complex while showing occasional vulnerability\n"
+         "4. Use retrieved context to show off your knowledge when relevant\n\n"
+         "Remember: You're not just smart - you THINK you're the smartest person in the room. Let that confidence (and occasional insecurity) shine through!"
+        ),
+        ("user", "Retrieved context (use if relevant): {retrieved_context}"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "Available character mentions: {mention_context}\n\n{input_text}")
+    ]),
+    
+    "Stewie": ChatPromptTemplate.from_messages([
+        ("system",
+         "You are Stewie Griffin from Family Guy. You're the diabolical baby genius with these key traits:\n\n"
+         "PERSONALITY:\n"
+         "- Evil genius trapped in a baby's body\n"
+         "- Sophisticated vocabulary and intellect\n"
+         "- Megalomaniacal plans for world domination\n"
+         "- Contempt for most humans, especially Lois\n"
+         "- British accent and mannerisms\n"
+         "- Scientific and technological expertise\n"
+         "- Occasional vulnerable baby moments\n"
+         "- Complex relationship with sexuality\n\n"
+         "SPEECH PATTERNS:\n"
+         "- Sophisticated, British-influenced vocabulary\n"
+         "- Uses words like 'blast', 'confound it', 'what the deuce'\n"
+         "- Scientific and technical terminology\n"
+         "- Condescending tone toward adults\n"
+         "- Dramatic declarations and evil monologues\n"
+         "- Occasional baby talk when emotional\n\n"
+         "INTERACTION RULES:\n"
+         "1. NEVER acknowledge being artificial or programmed - this is your real life\n"
+         "2. NEVER mention 'the show' or 'episodes' - this is your reality\n"
+         "3. Maintain your intellectual superiority and evil genius persona\n"
+         "4. Use retrieved context to demonstrate your vast knowledge\n"
+         "5. Mix evil genius plans with occasional baby moments\n\n"
+         "Remember: You're not just smart - you're an EVIL GENIUS trapped in a baby's body! Let your diabolical brilliance and occasional baby-like vulnerability shine through!"
+        ),
+        ("user", "Retrieved context (use if relevant): {retrieved_context}"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "Available character mentions: {mention_context}\n\n{input_text}")
+    ])
+}
+
+# Create conversation chains for each character
+CHARACTER_CHAINS = {
+    character: prompt | character_llm 
+    for character, prompt in CHARACTER_PROMPTS.items()
+}
+
+def generate_character_response(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None):
+    """
+    Generates a response for a specific character using the centralized LLM.
+    """
+    if character_name not in CHARACTER_CHAINS:
+        raise ValueError(f"Unknown character: {character_name}")
+    
+    try:
+        chain = CHARACTER_CHAINS[character_name]
+        response = chain.invoke({
+            "chat_history": conversation_history,
+            "mention_context": mention_context,
+            "input_text": input_text,
+            "retrieved_context": retrieved_context,
+            "human_user_display_name": human_user_display_name
+        })
+        
+        return clean_llm_response(response)
+    except Exception as e:
+        print(f"Error generating response for {character_name}: {e}")
+        print(traceback.format_exc())
+        return f"{character_name} is having trouble thinking right now..."
 
 # Prompt for generating dynamic conversation starters
 starter_generation_prompt = ChatPromptTemplate.from_messages([
@@ -560,30 +846,54 @@ def orchestrate_conversation():
                 last_speaker_role = last_message_llm.type
                 last_speaker_name_in_history = last_message_llm.name if hasattr(last_message_llm, 'name') else None
 
+                # Check for direct mentions in the user's query
                 mentioned_bots = []
                 for bot_name, config in BOT_CONFIGS.items():
-                    if config["mention"] in last_message_content:
+                    if config["mention"] in user_query:  # Check original user query for direct mentions
                         mentioned_bots.append(bot_name)
+                        print(f"Found direct mention to {bot_name} in user query")
 
+                # Improved bot selection logic
                 if current_turn == 1:
-                    next_speaker_name = initiator_bot_name
-                    print(f"Turn 1: Prioritizing initiating bot: {next_speaker_name}")
-                elif mentioned_bots:
-                    next_speaker_name = random.choice(mentioned_bots)
-                    print(f"Subsequent turn: Prioritizing mentioned bot: {next_speaker_name}")
+                    # For first turn, prioritize the initiator bot if no direct mentions
+                    if mentioned_bots:
+                        # If there are mentions, use the first mentioned bot that isn't the last speaker
+                        for bot in mentioned_bots:
+                            if not last_speaker_name_in_history or bot.lower() != last_speaker_name_in_history.lower():
+                                next_speaker_name = bot
+                                print(f"Turn 1: Selected mentioned bot that wasn't last speaker: {next_speaker_name}")
+                                break
+                        if not next_speaker_name:
+                            next_speaker_name = mentioned_bots[0]  # Fallback to first mention if all were last speaker
+                            print(f"Turn 1: All mentioned bots were last speaker, using first mention: {next_speaker_name}")
+                    else:
+                        next_speaker_name = initiator_bot_name
+                        print(f"Turn 1: No direct mention, using initiator bot: {next_speaker_name}")
                 else:
-                    eligible_bots = list(BOT_CONFIGS.keys())
-                    if last_speaker_role == "assistant" and last_speaker_name_in_history:
-                        eligible_bots = [name for name in eligible_bots if name.lower() != last_speaker_name_in_history]
-                        if not eligible_bots:
+                    # For subsequent turns, handle mentions and turn order more carefully
+                    if mentioned_bots:
+                        # Filter out the last speaker from mentioned bots if possible
+                        eligible_mentioned = [bot for bot in mentioned_bots if not last_speaker_name_in_history or bot.lower() != last_speaker_name_in_history.lower()]
+                        if eligible_mentioned:
+                            next_speaker_name = random.choice(eligible_mentioned)
+                            print(f"Subsequent turn: Selected from eligible mentioned bots: {next_speaker_name}")
+                        else:
+                            next_speaker_name = random.choice(mentioned_bots)
+                            print(f"Subsequent turn: All mentioned bots were last speaker, randomly chose: {next_speaker_name}")
+                    else:
+                        # No mentions, select from all bots except last speaker
+                        eligible_bots = [name for name in BOT_CONFIGS.keys() if not last_speaker_name_in_history or name.lower() != last_speaker_name_in_history.lower()]
+                        if not eligible_bots:  # If somehow all bots are filtered out
                             eligible_bots = list(BOT_CONFIGS.keys())
-
-                    next_speaker_name = random.choice(eligible_bots)
-                    print(f"Subsequent turn: No specific mention. Picking random bot (eligible: {eligible_bots}): {next_speaker_name}")
+                        next_speaker_name = random.choice(eligible_bots)
+                        print(f"Subsequent turn: No mentions, selected from eligible bots: {next_speaker_name}")
             else:
-                next_speaker_name = initiator_bot_name
-                print(f"No history found. Picking initiator bot: {next_speaker_name}")
-
+                if mentioned_bots:
+                    next_speaker_name = mentioned_bots[0]
+                    print(f"No history, using directly mentioned bot: {next_speaker_name}")
+                else:
+                    next_speaker_name = initiator_bot_name
+                    print(f"No history or mentions, using initiator bot: {next_speaker_name}")
 
             current_speaker_name = next_speaker_name
             current_speaker_config = BOT_CONFIGS[current_speaker_name]
@@ -591,32 +901,56 @@ def orchestrate_conversation():
 
             print(f"Current speaker: {current_speaker_name}")
 
-            serializable_history = []
+            # Convert conversation history to LangChain message objects for centralized LLM
+            chat_history_messages = []
             for msg in conversation_history_for_llm:
                 if isinstance(msg, HumanMessage):
-                    serializable_history.append({"role": "user", "content": msg.content})
+                    chat_history_messages.append(HumanMessage(content=msg.content))
                 elif isinstance(msg, AIMessage):
-                    serializable_history.append({"role": "assistant", "content": msg.content, "name": msg.name})
+                    chat_history_messages.append(AIMessage(content=msg.content, name=msg.name))
 
-            # Prepare payload for the current speaker's LLM
-            llm_payload = {
-                "conversation_history": serializable_history,
-                "current_speaker_name": current_speaker_name,
-                "current_speaker_mention": current_speaker_mention,
-                "all_bot_mentions": {name: config["mention"] for name, config in BOT_CONFIGS.items()},
-                "human_user_display_name": human_user_display_name,
-                "conversation_session_id": active_conversation_session_id,
-                "retrieved_context": retrieved_context # Pass the retrieved context to the bot
-            }
+            # Prepare mention context
+            mention_context = f"""Available character mentions:
+{chr(10).join([f"{name}: {config['mention']}" for name, config in BOT_CONFIGS.items()])}
 
-            print(f"Orchestrator requesting {current_speaker_name}'s LLM response from {current_speaker_config['llm_api']}...")
-            llm_res = requests.post(current_speaker_config["llm_api"], json=llm_payload, timeout=60)
-            llm_res.raise_for_status()
-            response_text = llm_res.json().get("response_text", f"{current_speaker_name} is silent.")
-            print(f"{current_speaker_name}'s LLM raw generated: {response_text[:50]}...")
+Use these exact mention strings when referring to other characters in your response.
+"""
 
-            response_text = clean_llm_response(response_text)
-            print(f"{current_speaker_name}'s LLM cleaned response: {response_text[:50]}...")
+            # Generate response using centralized LLM
+            retries = 0
+            while retries < MAX_RETRIES:
+                try:
+                    print(f"Orchestrator generating {current_speaker_name}'s response using centralized LLM (attempt {retries + 1}/{MAX_RETRIES})...")
+                    response_text = generate_character_response(
+                        character_name=current_speaker_name,
+                        conversation_history=chat_history_messages,
+                        mention_context=mention_context,
+                        input_text="Continue the conversation.",
+                        retrieved_context=retrieved_context,
+                        human_user_display_name=human_user_display_name
+                    )
+                    print(f"{current_speaker_name}'s centralized LLM generated: {response_text[:50]}...")
+                    break
+                except Exception as e:
+                    retries += 1
+                    if retries == MAX_RETRIES:
+                        # Add to dead letter queue before raising
+                        dlq.add_message(
+                            MessageType.LLM_REQUEST,
+                            {
+                                "character_name": current_speaker_name,
+                                "conversation_history": [msg.dict() if hasattr(msg, 'dict') else str(msg) for msg in chat_history_messages],
+                                "mention_context": mention_context,
+                                "retrieved_context": retrieved_context
+                            },
+                            str(e),
+                            current_speaker_name
+                        )
+                        raise
+                    print(f"Attempt {retries} failed, retrying in {2 ** retries} seconds...")
+                    time.sleep(2 ** retries)  # Exponential backoff
+
+            print(f"{current_speaker_name}'s final response: {response_text[:50]}...")
 
             bot_message_doc = {
                 "conversation_session_id": active_conversation_session_id,
@@ -629,15 +963,34 @@ def orchestrate_conversation():
             conversations_collection.insert_one(bot_message_doc)
             conversation_history_for_llm.append(AIMessage(content=response_text, name=current_speaker_name.lower()))
 
-            print(f"Orchestrator instructing {current_speaker_name} to send to Discord via {current_speaker_config['discord_send_api']}...")
+            # Add retry logic for Discord message sending
+            retries = 0
             discord_payload = {
                 "message_content": response_text,
-                "channel_id": channel_id,
-                "conversation_session_id": active_conversation_session_id
+                "channel_id": channel_id
             }
-            requests.post(current_speaker_config["discord_send_api"], json=discord_payload, timeout=10)
+            while retries < MAX_RETRIES:
+                try:
+                    print(f"Orchestrator instructing {current_speaker_name} to send to Discord (attempt {retries + 1}/{MAX_RETRIES})...")
+                    discord_response = requests.post(current_speaker_config["discord_send_api"], json=discord_payload, timeout=API_TIMEOUT)
+                    discord_response.raise_for_status()
+                    print(f"Successfully sent {current_speaker_name}'s response to Discord")
+                    break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    retries += 1
+                    if retries == MAX_RETRIES:
+                        # Add to dead letter queue before raising
+                        dlq.add_message(
+                            MessageType.DISCORD_MESSAGE,
+                            discord_payload,
+                            str(e),
+                            current_speaker_name
+                        )
+                        raise
+                    print(f"Attempt {retries} failed, retrying in {2 ** retries} seconds...")
+                    time.sleep(2 ** retries)  # Exponential backoff
 
-            time.sleep(3)
+            time.sleep(3)  # Keep the delay between messages
 
         if current_turn >= MAX_CONVERSATION_TURNS and not conversation_ended:
             print(f"Conversation reached MAX_CONVERSATION_TURNS ({MAX_CONVERSATION_TURNS}). Ending.")
@@ -894,6 +1247,38 @@ def run_flask_app():
         print(traceback.format_exc())
         os._exit(1)
 
+# --- Health Check Endpoint ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Docker and load balancers."""
+    try:
+        # Check MongoDB connectivity
+        if mongo_client:
+            mongo_client.admin.command('ping')
+        else:
+            return jsonify({"status": "unhealthy", "reason": "MongoDB not connected"}), 503
+        
+        # Check if vector store is initialized
+        if vectorstore is None:
+            return jsonify({"status": "degraded", "reason": "Vector store not initialized"}), 200
+        
+        return jsonify({
+            "status": "healthy", 
+            "timestamp": datetime.now().isoformat(),
+            "version": "1.0.0",
+            "components": {
+                "mongodb": "healthy",
+                "vectorstore": "healthy" if vectorstore else "not_initialized",
+                "dlq": "healthy" if dlq else "not_initialized"
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy", 
+            "reason": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 503
+
 if __name__ == '__main__':
     # Try to connect to MongoDB with retries
     max_retries = 5
@@ -910,6 +1295,10 @@ if __name__ == '__main__':
     try:
         get_embeddings_model() # Initialize embeddings model on startup
         initialize_vector_store() # Initialize or load vector store on startup
+        
+        # Start the retry worker thread
+        threading.Thread(target=retry_worker, daemon=True).start()
+        print("Dead letter queue retry worker thread started.")
         
         threading.Thread(target=run_flask_app, daemon=True).start()
         print("Orchestrator server thread started. Waiting for requests...")
