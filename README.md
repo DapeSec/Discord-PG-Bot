@@ -30,27 +30,13 @@ graph TD
     end
 
     subgraph Docker["Docker Environment"]
-        subgraph Security["Security Layer"]
-            Env[Environment<br>Variables]
-            Auth[Auth Service]
-            Keys[API Key<br>Management]
-        end
-
         subgraph Orchestrator["Orchestrator Container"]
             OS[Orchestrator Service<br>:5003]
             CL[Centralized LLM<br>Processing]
             CP[Character Prompts<br>& Personalities]
+            DLQ[Dead Letter<br>Queue]
             
-            subgraph Queue["Message Queue System"]
-                Q[Main Queue]
-                DLQ[Dead Letter<br>Queue]
-                Retry[Retry<br>Mechanism]
-            end
-            
-            subgraph RAG["RAG System"]
-                Doc[Document<br>Processor]
-                Emb[Embedding<br>Generator]
-                Ret[Retrieval<br>Engine]
+            subgraph RAG["RAG System (Integrated)"]
                 VDB[(Chroma DB)]
             end
         end
@@ -65,17 +51,10 @@ graph TD
             MDB[(MongoDB<br>:27017)]
             Log[(Log Storage)]
         end
-
-        subgraph Monitor["Monitoring"]
-            Met[Metrics<br>Collector]
-            Health[Health<br>Checks]
-            Alert[Alert<br>System]
-        end
     end
 
     DC <--> DAuth
-    DAuth <--> Auth
-    Auth <--> PB & BB & SB
+    DAuth <--> PB & BB & SB
     
     PB & BB & SB --> OS
     OS --> CL
@@ -83,34 +62,18 @@ graph TD
     CL --> OL
     OL --> ML
     
-    OS --> Q
-    Q --> Retry
-    Retry --> Q
-    Q --> DLQ
+    OS --> DLQ
     
-    OS --> Doc
-    Doc --> Emb
-    Emb --> VDB
-    VDB --> Ret
-    Ret --> CL
+    OS --> VDB
+    VDB --> CL
     
     OS --> MDB
     PB & BB & SB --> Log
-    
-    OS & PB & BB & SB --> Met
-    Met --> Health
-    Health --> Alert
-    
-    Env --> OS & PB & BB & SB
-    Keys --> Auth
 
     style Discord fill:#7289DA,color:white
     style Docker fill:#4CAF50,color:white
     style Host fill:#FF9800,color:white
     style Storage fill:#2196F3,color:white
-    style Security fill:#F44336,color:white
-    style Monitor fill:#9C27B0,color:white
-    style Queue fill:#795548,color:white
     style RAG fill:#009688,color:white
     style Orchestrator fill:#FF5722,color:white
 ```
@@ -132,7 +95,7 @@ graph TD
 - **Multi-Bot Interactions**: Natural conversation flow between characters
 - **Automated Conversations**: Daily scheduled interactions for continuous engagement
 - **Dead Letter Queue**: Robust error handling and message retry system
-- **Comprehensive Monitoring**: Health checks and logging across all services
+- **Basic Health Checks**: Health endpoints for service monitoring
 
 ## Architecture Benefits
 
@@ -417,7 +380,7 @@ The centralized architecture includes comprehensive error handling:
 #### System Level
 - **MongoDB Connection**: Connection pooling and retry logic
 - **Vector Store Issues**: Fallback to non-RAG responses
-- **Resource Exhaustion**: Graceful degradation and alerting
+- **Resource Exhaustion**: Graceful degradation and logging
 
 ### Performance Optimizations
 
@@ -444,6 +407,11 @@ Feel free to fork the repository and submit pull requests for any improvements y
 - Custom personality fine-tuning
 - Extended conversation history analysis
 - Improved automated conversation triggers
+- **Metrics collection and monitoring system**
+- **Centralized alerting and notification system**
+- **Enhanced security and authentication layer**
+- **Separate message queue system**
+- **Advanced performance monitoring and analytics**
 
 ## License
 
