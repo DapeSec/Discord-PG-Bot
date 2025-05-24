@@ -38,6 +38,7 @@ ENV PYTHONPATH=/app
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Command to run the orchestrator
-CMD ["python", "-m", "src.app.orchestrator.server"]
+# Command to run the orchestrator using Gunicorn
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5003", "src.app.orchestrator.server:app"]
+# CMD ["python", "-m", "src.app.orchestrator.server"]
 # CMD ["python", "-c", "import sys; print('Python sys.path:'); print(sys.path); import sentence_transformers; print('sentence_transformers imported successfully')"] 
