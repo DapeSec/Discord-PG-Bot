@@ -668,7 +668,7 @@ MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS = int(os.getenv("MIN_TIME_BETWEEN_ORGANIC
 # Enhanced follow-up conversation settings
 ENABLE_FOLLOW_UP_CONVERSATIONS = os.getenv("ENABLE_FOLLOW_UP_CONVERSATIONS", "true").lower() == "true"
 FOLLOW_UP_DELAY_SECONDS = float(os.getenv("FOLLOW_UP_DELAY_SECONDS", "3.0"))  # Delay before checking for follow-ups
-MIN_TIME_BETWEEN_FOLLOW_UPS = float(os.getenv("MIN_TIME_BETWEEN_FOLLOW_UPS", "30.0"))  # Minimum seconds between follow-up attempts
+MIN_TIME_BETWEEN_FOLLOW_UPS = float(os.getenv("MIN_TIME_BETWEEN_FOLLOW_UPS", "8.0"))  # Minimum seconds between follow-up attempts
 
 END_CONVERSATION_MARKER = "[END_CONVERSATION]"
 
@@ -1949,6 +1949,9 @@ def orchestrate_conversation():
     human_user_display_name = data.get("human_user_display_name", None)
     conversation_session_id = data.get("conversation_session_id", None)
     is_new_conversation = data.get("is_new_conversation", False)
+    is_follow_up = data.get("is_follow_up", False)
+    forced_speaker = data.get("forced_speaker", None)
+    original_message = data.get("original_message", user_query)  # Full message with mentions
 
     if not all([user_query, channel_id, initiator_bot_name, initiator_mention]):
         print(f"Error: Missing required data in /orchestrate payload. Received: {data}")
@@ -2017,14 +2020,22 @@ def orchestrate_conversation():
         last_speaker_name_in_history = None
         mentioned_bots = []
 
-        if recent_llm_history:
+        # If this is a follow-up with a forced speaker, use that
+        if is_follow_up and forced_speaker:
+            next_speaker_name = forced_speaker
+            print(f"🔄 Follow-up: Using forced speaker: {next_speaker_name}")
+        elif recent_llm_history:
             last_message_llm = recent_llm_history[-1]
             last_speaker_name_in_history = last_message_llm.name if hasattr(last_message_llm, 'name') else None
 
             for bot_name, config in BOT_CONFIGS.items():
-                if config["mention"] in user_query:
+                # Check for both Discord mention format and text mentions in original message
+                if (config["mention"] in original_message or 
+                    f"@{bot_name}" in original_message or 
+                    f"@{bot_name.lower()}" in original_message or
+                    f"{bot_name.lower()}" in original_message.lower()):
                     mentioned_bots.append(bot_name)
-                    print(f"Found direct mention to {bot_name} in user query")
+                    print(f"Found direct mention to {bot_name} in original message")
 
             if mentioned_bots:
                 eligible_mentioned = [bot for bot in mentioned_bots if not last_speaker_name_in_history or bot.lower() != last_speaker_name_in_history.lower()]
@@ -2066,20 +2077,29 @@ def orchestrate_conversation():
 
         else: # No conversation history (recent_llm_history is empty)
             # This means it's the very first message of a new session, or history was cleared
-            # Check for mentions in the very first user query
-            for bot_name, config in BOT_CONFIGS.items():
-                if config["mention"] in user_query:
-                    mentioned_bots.append(bot_name)
-            
-            if mentioned_bots:
-                next_speaker_name = mentioned_bots[0] # First mentioned bot responds
-                print(f"🎯 No history, using directly mentioned bot: {next_speaker_name}")
-            elif initiator_bot_name: # Fallback to the bot that initiated this request from Discord
-                next_speaker_name = initiator_bot_name
-                print(f"🔄 No history or mentions, using initiator bot: {next_speaker_name}")
-            else: # Absolute fallback if no initiator (e.g. direct API call without initiator)
-                next_speaker_name = random.choice(list(BOT_CONFIGS.keys()))
-                print(f"🔄 No history, mentions, or initiator, using random bot: {next_speaker_name}")
+            # But if it's a follow-up, we should still use the forced speaker
+            if is_follow_up and forced_speaker:
+                next_speaker_name = forced_speaker
+                print(f"🔄 Follow-up with no history: Using forced speaker: {next_speaker_name}")
+            else:
+                # Check for mentions in the original message
+                for bot_name, config in BOT_CONFIGS.items():
+                    # Check for both Discord mention format and text mentions
+                    if (config["mention"] in original_message or 
+                        f"@{bot_name}" in original_message or 
+                        f"@{bot_name.lower()}" in original_message or
+                        f"{bot_name.lower()}" in original_message.lower()):
+                        mentioned_bots.append(bot_name)
+                
+                if mentioned_bots:
+                    next_speaker_name = mentioned_bots[0] # First mentioned bot responds
+                    print(f"🎯 No history, using directly mentioned bot: {next_speaker_name}")
+                elif initiator_bot_name: # Fallback to the bot that initiated this request from Discord
+                    next_speaker_name = initiator_bot_name
+                    print(f"🔄 No history or mentions, using initiator bot: {next_speaker_name}")
+                else: # Absolute fallback if no initiator (e.g. direct API call without initiator)
+                    next_speaker_name = random.choice(list(BOT_CONFIGS.keys()))
+                    print(f"🔄 No history, mentions, or initiator, using random bot: {next_speaker_name}")
 
         if not next_speaker_name: # Final safety net
             print("ERROR: next_speaker_name could not be determined. Defaulting to a random bot.")
@@ -3024,12 +3044,21 @@ class OrganicConversationCoordinator:
                 
             now = datetime.now()
             
-            # Check minimum time between follow-up attempts
+            # Check minimum time between follow-up attempts (but allow exceptions for strong triggers)
             if self.last_follow_up_attempt:
                 time_since_last = (now - self.last_follow_up_attempt).total_seconds()
                 if time_since_last < MIN_TIME_BETWEEN_FOLLOW_UPS:
-                    print(f"🔄 Follow-up Coordinator: Too soon since last follow-up ({time_since_last:.1f}s < {MIN_TIME_BETWEEN_FOLLOW_UPS}s)")
-                    return False
+                    # Get recent messages to check for strong triggers that might override timing
+                    recent_messages = list(conversations_collection.find({
+                        "channel_id": channel_id
+                    }).sort("timestamp", -1).limit(3))
+                    
+                    # Check if there are very strong triggers that justify immediate follow-up
+                    if recent_messages and self._has_strong_follow_up_triggers(recent_messages):
+                        print(f"🔄 Follow-up Coordinator: Strong triggers detected, overriding timing constraint ({time_since_last:.1f}s)")
+                    else:
+                        print(f"🔄 Follow-up Coordinator: Too soon since last follow-up ({time_since_last:.1f}s < {MIN_TIME_BETWEEN_FOLLOW_UPS}s)")
+                        return False
             
             # Get the last few messages to analyze for follow-up opportunities
             recent_messages = list(conversations_collection.find({
@@ -3159,7 +3188,8 @@ class OrganicConversationCoordinator:
                 # Other characters likely to respond to Stewie
                 "peter_triggers": [
                     "baby", "evil", "plan", "invention", "british", "smart", "genius",
-                    "mother", "lois", "family", "stupid", "fat man"
+                    "mother", "lois", "family", "stupid", "fat man", "global domination",
+                    "world domination", "victory is mine", "blast", "take over", "plans"
                 ],
                 "brian_triggers": [
                     "intellectual", "genius", "science", "invention", "philosophy", "culture",
@@ -3182,7 +3212,8 @@ class OrganicConversationCoordinator:
             "what do you think", "don't you think", "right?", "you know?", "isn't that",
             "what about", "remember when", "speaking of", "by the way", "actually",
             "question", "wonder", "curious", "thoughts?", "opinions?", "agree?",
-            "hehehe", "hehe", "funny", "ridiculous", "stupid", "smart", "brilliant"
+            "hehehe", "hehe", "funny", "ridiculous", "stupid", "smart", "brilliant",
+            "do share", "tell me", "have you", "plans to", "going to", "victory is mine"
         ]
         
         if any(pattern in last_content for pattern in response_inviting_patterns):
@@ -3207,6 +3238,74 @@ class OrganicConversationCoordinator:
         # Default: if we've gotten this far and the message is substantial, there's a chance for follow-up
         if len(last_content.strip()) > 50:
             print(f"🔄 Follow-up Analysis: Substantial message detected, moderate chance for follow-up")
+            return True
+        
+        return False
+
+    def _has_strong_follow_up_triggers(self, recent_messages):
+        """
+        Checks for very strong triggers that justify immediate follow-up responses,
+        overriding normal timing constraints.
+        """
+        if not recent_messages:
+            return False
+        
+        last_message = recent_messages[0]
+        last_content = last_message.get("content", "").lower()
+        last_speaker = last_message.get("name", "").lower()
+        
+        # Very strong triggers that almost always warrant immediate responses
+        strong_triggers = [
+            # Direct questions or challenges
+            "what do you think", "don't you think", "right?", "agree?", "disagree?",
+            "what about you", "your thoughts", "your opinion", "what's your",
+            
+            # Controversial or provocative statements
+            "stupid", "idiot", "wrong", "ridiculous", "absurd", "brilliant", "genius",
+            "best", "worst", "hate", "love", "better than", "worse than",
+            
+            # Character-specific strong triggers
+            "global domination", "world domination", "evil plan", "take over",
+            "chicken fight", "surfin bird", "pawtucket patriot",
+            "intellectual", "sophisticated", "pretentious", "novel", "book",
+            
+            # Family dynamics
+            "lois", "mother", "wife", "family", "griffin", "meg", "chris",
+            
+            # Emotional or dramatic statements
+            "victory is mine", "blast", "damn", "hell", "amazing", "incredible",
+            "unbelievable", "shocking", "outrageous"
+        ]
+        
+        # Check if the message contains multiple strong triggers
+        trigger_count = sum(1 for trigger in strong_triggers if trigger in last_content)
+        if trigger_count >= 2:
+            print(f"🔥 Strong Follow-up Triggers: Multiple triggers detected ({trigger_count})")
+            return True
+        
+        # Check for very specific character interaction triggers
+        if last_speaker == "stewie":
+            stewie_strong_triggers = ["global domination", "world domination", "evil plan", "victory is mine", "blast"]
+            if any(trigger in last_content for trigger in stewie_strong_triggers):
+                print(f"🔥 Strong Follow-up Triggers: Stewie's signature phrases detected")
+                return True
+        
+        if last_speaker == "peter":
+            peter_strong_triggers = ["chicken fight", "surfin bird", "hehehe", "pawtucket", "bird is the word"]
+            if any(trigger in last_content for trigger in peter_strong_triggers):
+                print(f"🔥 Strong Follow-up Triggers: Peter's signature phrases detected")
+                return True
+        
+        if last_speaker == "brian":
+            brian_strong_triggers = ["intellectual", "sophisticated", "novel", "pretentious", "culture"]
+            if any(trigger in last_content for trigger in brian_strong_triggers):
+                print(f"🔥 Strong Follow-up Triggers: Brian's intellectual topics detected")
+                return True
+        
+        # Check for direct questions
+        question_patterns = ["?", "what", "how", "why", "when", "where", "who"]
+        if "?" in last_content and any(pattern in last_content for pattern in question_patterns):
+            print(f"🔥 Strong Follow-up Triggers: Direct question detected")
             return True
         
         return False
@@ -3288,19 +3387,10 @@ class OrganicConversationCoordinator:
                 print(f"🔄 Follow-up Coordinator: No other characters available to respond")
                 return False
             
-            # Use intelligent selection to pick the best responder
-            print("🔄 Follow-up Coordinator: Using intelligent selection for follow-up responder...")
-            follow_up_speaker = select_conversation_initiator_intelligently(recent_history)
-            
-            # If intelligent selection picks the same character, override it
-            if follow_up_speaker and follow_up_speaker.lower() == last_speaker:
-                follow_up_speaker = random.choice(available_characters)
-                print(f"🔄 Follow-up Coordinator: Intelligent selection picked same character, overriding to: {follow_up_speaker}")
-            elif not follow_up_speaker:
-                follow_up_speaker = random.choice(available_characters)
-                print(f"🔄 Follow-up Coordinator: Intelligent selection failed, using random: {follow_up_speaker}")
-            else:
-                print(f"🔄 Follow-up Coordinator: Intelligent selection chose: {follow_up_speaker}")
+            # For follow-ups, we want a different character than the last speaker
+            # Use simple selection from available characters to avoid the same character responding
+            follow_up_speaker = random.choice(available_characters)
+            print(f"🔄 Follow-up Coordinator: Selected different character for follow-up: {follow_up_speaker} (last speaker was {last_speaker})")
             
             follow_up_bot_config = BOT_CONFIGS[follow_up_speaker]
             
@@ -3318,7 +3408,9 @@ class OrganicConversationCoordinator:
                     "initiator_mention": follow_up_bot_config["mention"],
                     "human_user_display_name": None,
                     "is_new_conversation": False,
-                    "conversation_session_id": current_session_id
+                    "conversation_session_id": current_session_id,
+                    "is_follow_up": True,
+                    "forced_speaker": follow_up_speaker
                 }
                 
                 response = requests.post(ORCHESTRATOR_API_URL, json=initiate_payload, timeout=120)
