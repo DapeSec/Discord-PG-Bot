@@ -1,0 +1,39 @@
+# Lightweight Docker image for Character Config Services
+# These services only serve metadata and configuration - no LLM processing
+FROM python:3.9-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY requirements-bot-config.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements-bot-config.txt
+
+# Copy the bot source code
+# This will be overridden by the specific bot service in docker-compose
+COPY src/app/bots/ ./src/app/bots/
+
+# Create a non-root user for security
+RUN useradd -m -u 1003 botconfig && chown -R botconfig:botconfig /app
+USER botconfig
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app:/app/src
+
+# Expose a default port (will be overridden by specific services)
+EXPOSE 5006
+
+# Health check endpoint for all character services
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5006/health || exit 1
+
+# Default command - will be overridden by specific services in docker-compose.yml
+CMD ["python", "-m", "src.app.bots.peter_bot"] 

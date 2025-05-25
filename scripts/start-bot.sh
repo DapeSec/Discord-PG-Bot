@@ -1,94 +1,73 @@
 #!/bin/bash
-set -e
+# scripts/start-bot.sh
 
-# Function to log with timestamp
-log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"
-}
+# This script now expects the Python module path as the first argument (e.g., src.app.bots.peter_bot)
+# and the bot's specific dependencies as a comma-separated string for the second argument (e.g., "mongodb:27017,orchestrator:5003")
 
-# Function to check if a URL is reachable
-wait_for_url() {
-    local url=$1
-    local timeout=${2:-60}
-    local start_time=$(date +%s)
-    
-    log "Waiting for $url to be available..."
-    
-    while true; do
-        if curl -f -s "$url" > /dev/null 2>&1; then
-            log "✓ $url is available"
-            break
-        fi
-        
-        current_time=$(date +%s)
-        elapsed=$((current_time - start_time))
-        
-        if [ $elapsed -ge $timeout ]; then
-            log "✗ Timeout waiting for $url (${timeout}s)"
-            exit 1
-        fi
-        
-        log "⏳ Waiting for $url... (${elapsed}s elapsed)"
-        sleep 2
-    done
-}
+set -e # Exit immediately if a command exits with a non-zero status.
 
-# Function to check if a port is open
-wait_for_port() {
-    local host=$1
-    local port=$2
-    local timeout=${3:-60}
-    local start_time=$(date +%s)
-    
-    log "Waiting for $host:$port to be available..."
-    
-    while true; do
-        if nc -z "$host" "$port" 2>/dev/null; then
-            log "✓ $host:$port is available"
-            break
-        fi
-        
-        current_time=$(date +%s)
-        elapsed=$((current_time - start_time))
-        
-        if [ $elapsed -ge $timeout ]; then
-            log "✗ Timeout waiting for $host:$port (${timeout}s)"
-            exit 1
-        fi
-        
-        log "⏳ Waiting for $host:$port... (${elapsed}s elapsed)"
-        sleep 2
-    done
-}
+PYTHON_MODULE=$1
+SERVICE_DEPENDENCIES=$2 # Comma-separated list of host:port dependencies
 
-# Validate required environment variables
-required_vars=("ORCHESTRATOR_API_URL" "MONGO_URI")
-for var in "${required_vars[@]}"; do
-    if [ -z "${!var}" ]; then
-        log "ERROR: Required environment variable $var is not set"
-        exit 1
+if [ -z "$PYTHON_MODULE" ] || [ -z "$SERVICE_DEPENDENCIES" ]; then
+  echo "Usage: $0 <python_module_path> <service_dependencies>"
+  echo "Example: $0 src.app.bots.peter_bot mongodb:27017,orchestrator:5003"
+  exit 1
+fi
+
+# --- Dependency Check Function ---
+wait_for_service() {
+  local HOST_PORT=$1
+  local HOST=$(echo $HOST_PORT | cut -d: -f1)
+  local PORT=$(echo $HOST_PORT | cut -d: -f2)
+  local RETRIES=30 # ~5 minutes with 10s sleep
+  local COUNT=0
+
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] Waiting for $HOST:$PORT to be available..."
+  until nc -z -w5 $HOST $PORT; do # -w5 for 5 second timeout per attempt
+    COUNT=$((COUNT + 1))
+    if [ $COUNT -ge $RETRIES ]; then
+      echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ Service $HOST:$PORT did not become available after $RETRIES attempts. Exiting."
+      exit 1
     fi
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Still waiting for $HOST:$PORT... (attempt $COUNT/$RETRIES)"
+    sleep 10
+  done
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✓ $HOST:$PORT is available"
+}
+
+# --- Check and Wait for All Dependencies ---
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] Checking service dependencies: $SERVICE_DEPENDENCIES"
+IFS=',' read -ra ADDR <<< "$SERVICE_DEPENDENCIES"
+for SERVICE_HOST_PORT in "${ADDR[@]}"; do
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] Checking dependency: $SERVICE_HOST_PORT"
+  wait_for_service "$SERVICE_HOST_PORT"
+
+  # Special handling for orchestrator to wait for its /health endpoint
+  if [[ "$SERVICE_HOST_PORT" == *"orchestrator"* ]]; then
+    ORCH_HEALTH_URL="http://${SERVICE_HOST_PORT}/health"
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Waiting for $ORCH_HEALTH_URL to be available..."
+    # Use curl with retry and timeout for the health check
+    RETRIES=30 # ~5 minutes with 10s sleep
+    COUNT=0
+    until curl --output /dev/null --silent --head --fail -m 5 "$ORCH_HEALTH_URL"; do
+        COUNT=$((COUNT + 1))
+        if [ $COUNT -ge $RETRIES ]; then
+          echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ Orchestrator health check at $ORCH_HEALTH_URL failed after $RETRIES attempts. Exiting."
+          exit 1
+        fi
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] Still waiting for $ORCH_HEALTH_URL... (attempt $COUNT/$RETRIES)"
+        sleep 10
+    done
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✓ $ORCH_HEALTH_URL is available"
+  fi
 done
 
-# Wait for MongoDB
-log "Checking MongoDB connectivity..."
-wait_for_port mongodb 27017
-
-# Wait for Orchestrator
-log "Checking Orchestrator connectivity..."
-orchestrator_host=$(echo "$ORCHESTRATOR_API_URL" | sed 's|http://||' | cut -d: -f1)
-orchestrator_port=$(echo "$ORCHESTRATOR_API_URL" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
-wait_for_port "$orchestrator_host" "$orchestrator_port"
-
-# Wait for Orchestrator health endpoint
-orchestrator_health_url=$(echo "$ORCHESTRATOR_API_URL" | sed 's|/orchestrate|/health|')
-wait_for_url "$orchestrator_health_url"
-
-# Additional wait for service stabilization
-log "Waiting additional 10 seconds for service stabilization..."
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] Waiting additional 10 seconds for service stabilization..."
 sleep 10
 
-log "All dependencies are ready. Starting bot service..."
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] All dependencies are ready. Starting bot service for $PYTHON_MODULE..."
 
-# Execute the command passed as arguments
-exec "$@" 
+# Execute the Python module directly. Python's -m flag runs library module as a script.
+# This will invoke the if __name__ == '__main__' block in the specified bot's Python file.
+exec python -u -m "$PYTHON_MODULE" 

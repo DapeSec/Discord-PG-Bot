@@ -1,0 +1,33 @@
+FROM python:3.9-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY requirements-discord-handler.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements-discord-handler.txt
+
+# Copy the application source code
+COPY src/app/discord_handler/ ./src/app/discord_handler/
+
+# Create a non-root user for security
+RUN useradd -m -u 1002 briandiscord && chown -R briandiscord:briandiscord /app
+USER briandiscord
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app:/app/src
+
+# Expose the port
+EXPOSE 5012
+
+# Command to run the application with Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:5012", "--workers", "1", "--threads", "1", "--timeout", "60", "src.app.discord_handler.brian_discord_service:app"] 

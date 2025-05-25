@@ -1,0 +1,39 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies needed for some python packages (e.g., numpy, sentence-transformers)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first to leverage Docker cache
+COPY requirements-rag-retriever.txt .
+
+# Install Python dependencies
+# Using --no-cache-dir to reduce image size
+# Using --default-timeout to prevent pip install hangs if PyPI is slow
+RUN pip install --no-cache-dir --default-timeout=100 -r requirements-rag-retriever.txt
+
+# Copy the application source code
+# Only copy what's necessary for this service
+COPY src/app/rag_retriever/ ./src/app/rag_retriever/
+# If there are shared utilities, copy them too. For now, assuming self-contained.
+# COPY src/app/utils/ ./src/app/utils/ 
+
+# Create a non-root user for better security
+RUN useradd -m -u 1002 ragretriever && chown -R ragretriever:ragretriever /app
+USER ragretriever
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app:/app/src
+ENV FLASK_APP=src.app.rag_retriever.retriever_service:app
+
+# Expose the port the app runs on
+EXPOSE 5005
+
+# Command to run the application using Gunicorn for production
+# Using single worker to avoid race conditions with global variable initialization
+CMD ["sh", "-c", "gunicorn --preload --timeout 120 -w 1 -b 0.0.0.0:${RAG_RETRIEVER_PORT:-5005} src.app.rag_retriever.retriever_service:app"] 

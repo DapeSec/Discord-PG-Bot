@@ -1,56 +1,188 @@
-version: '3.8'
-
 services:
+  # MongoDB Database
   mongodb:
-    image: mongo:6.0
+    image: mongo:5.0
+    container_name: mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: adminpassword
+      MONGO_INITDB_DATABASE: discord_bot_conversations
     ports:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=adminpassword
-      - MONGO_INITDB_DATABASE=discord_bot_conversations
-    command: mongod --auth --bind_ip_all
     networks:
       - bot_network
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')", "--host", "localhost", "--username", "admin", "--password", "adminpassword", "--authenticationDatabase", "admin"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # RAG Retriever Service (handles vector database and context retrieval)
+  rag-retriever:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rag_retriever
+    container_name: rag-retriever
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RAG_RETRIEVER_PORT=5005
+      - CHROMA_DB_PATH=/app/chroma_db
+      - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
+      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
+      - MONGO_DB_NAME=discord_bot_conversations
+    ports:
+      - "5005:5005"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    volumes:
+      # Persist vector database for RAG system
+      - ../chroma_db:/app/chroma_db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
 
+  # Peter Discord Handler Service (manages Peter's Discord interactions)
+  peter-discord:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.peter_discord
+    container_name: peter-discord
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PETER_DISCORD_PORT=5011
+      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
+      - DISCORD_BOT_TOKEN_PETER=${DISCORD_BOT_TOKEN_PETER}
+    ports:
+      - "5011:5011"
+    depends_on:
+      - orchestrator
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5011/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Brian Discord Handler Service (manages Brian's Discord interactions)
+  brian-discord:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.brian_discord
+    container_name: brian-discord
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BRIAN_DISCORD_PORT=5012
+      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
+      - DISCORD_BOT_TOKEN_BRIAN=${DISCORD_BOT_TOKEN_BRIAN}
+    ports:
+      - "5012:5012"
+    depends_on:
+      - orchestrator
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5012/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Stewie Discord Handler Service (manages Stewie's Discord interactions)
+  stewie-discord:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.stewie_discord
+    container_name: stewie-discord
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - STEWIE_DISCORD_PORT=5013
+      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
+      - DISCORD_BOT_TOKEN_STEWIE=${DISCORD_BOT_TOKEN_STEWIE}
+    ports:
+      - "5013:5013"
+    depends_on:
+      - orchestrator
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5013/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Orchestrator Service (coordinates conversations and handles ALL LLM interactions via LOCAL MISTRAL)
   orchestrator:
     build:
       context: ..
       dockerfile: docker/Dockerfile.orchestrator
-    ports:
-      - "5003:5003"
-    volumes:
-      - ..:/app
-      - ../logs:/app/logs
-      - ../chroma_db:/app/chroma_db
+    container_name: orchestrator
+    restart: unless-stopped
     env_file:
       - ../.env
     environment:
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - PYTHONUNBUFFERED=1
+      - ORCHESTRATOR_PORT=5003
       - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=discord_bot_conversations
-      - MONGO_COLLECTION_NAME=conversations
-      - ORCHESTRATOR_HOST=0.0.0.0
-      - ORCHESTRATOR_PORT=5003
-      # Bot API URLs for Docker networking
-      - PETER_BOT_DISCORD_SEND_API_URL=http://peter:5005/send_discord_message
-      - PETER_BOT_INITIATE_API_URL=http://peter:5005/initiate_conversation
-      - BRIAN_BOT_DISCORD_SEND_API_URL=http://brian:5002/send_discord_message
-      - BRIAN_BOT_INITIATE_API_URL=http://brian:5002/initiate_conversation
-      - STEWIE_BOT_DISCORD_SEND_API_URL=http://stewie:5004/send_discord_message
-      - STEWIE_BOT_INITIATE_API_URL=http://stewie:5004/initiate_conversation
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - PETER_DISCORD_URL=http://peter-discord:5011
+      - BRIAN_DISCORD_URL=http://brian-discord:5012
+      - STEWIE_DISCORD_URL=http://stewie-discord:5013
+      - PETER_API_URL=http://peter:5006
+      - BRIAN_API_URL=http://brian:5007
+      - STEWIE_API_URL=http://stewie:5008
+      # RAG Retriever Service Configuration (replaces direct ChromaDB access)
+      - RAG_RETRIEVER_API_URL=http://rag-retriever:5005/retrieve
+      # RAG Crawler Service Configuration
+      - RAG_CRAWLER_API_URL=http://rag-crawler:5009
+      # LOCAL MISTRAL NEMO CONFIGURATION (Updated for RTX 4070 Super)
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral-nemo}
+      # Family Guy Wiki RAG Configuration
+      - FANDOM_WIKI_START_URL=${FANDOM_WIKI_START_URL:-https://familyguy.fandom.com/wiki/Main_Page}
+      - FANDOM_WIKI_MAX_PAGES=${FANDOM_WIKI_MAX_PAGES:-100}
+      - FANDOM_WIKI_CRAWL_DELAY=${FANDOM_WIKI_CRAWL_DELAY:-1}
+      - DEFAULT_DISCORD_CHANNEL_ID=${DEFAULT_DISCORD_CHANNEL_ID}
+      # Fine-tuning System Configuration
+      - FINE_TUNING_ENABLED=${FINE_TUNING_ENABLED:-true}
+      - QUALITY_CONTROL_ENABLED=${QUALITY_CONTROL_ENABLED:-true}
+      - OPTIMIZATION_THRESHOLD=${OPTIMIZATION_THRESHOLD:-0.7}
+      - MIN_RATINGS_FOR_OPTIMIZATION=${MIN_RATINGS_FOR_OPTIMIZATION:-10}
+      - AB_TEST_PERCENTAGE=${AB_TEST_PERCENTAGE:-0.2}
+      - QUALITY_CONTROL_MIN_RATING=${QUALITY_CONTROL_MIN_RATING:-3.0}
+      - QUALITY_CONTROL_MAX_RETRIES=${QUALITY_CONTROL_MAX_RETRIES:-3}
+    ports:
+      - "5003:5003"
     depends_on:
       mongodb:
+        condition: service_healthy
+      rag-retriever:
+        condition: service_healthy
+      peter:
+        condition: service_healthy
+      brian:
+        condition: service_healthy
+      stewie:
         condition: service_healthy
     networks:
       - bot_network
@@ -59,114 +191,118 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
-    restart: unless-stopped
 
+  # Peter Character Config Service (lightweight - config/metadata only)
   peter:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.bot
-    command: ["./scripts/start-bot.sh", "python", "-m", "src.app.bots.peter_bot"]
-    ports:
-      - "5005:5005"
-    volumes:
-      - ..:/app
-      - ../logs:/app/logs
-      - ../chroma_db:/app/chroma_db
-    env_file:
-      - ../.env
+      dockerfile: docker/Dockerfile.bot_config
+    container_name: peter
+    restart: unless-stopped
     environment:
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
-      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
-      - BOT_NAME=Peter
-      - BOT_PORT=5005
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      orchestrator:
-        condition: service_healthy
+      - PYTHONUNBUFFERED=1
+      - PETER_BOT_PORT=5006
+      # Note: No LLM dependencies - all character responses generated by orchestrator
+    ports:
+      - "5006:5006"
+    command: ["gunicorn", "--preload", "--timeout", "60", "-w", "1", "-b", "0.0.0.0:5006", "src.app.bots.peter_bot:app"]
     networks:
       - bot_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
-    restart: unless-stopped
 
+  # Brian Character Config Service (lightweight - config/metadata only)
   brian:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.bot
-    command: ["./scripts/start-bot.sh", "python", "-m", "src.app.bots.brian_bot"]
-    ports:
-      - "5002:5002"
-    volumes:
-      - ..:/app
-      - ../logs:/app/logs
-      - ../chroma_db:/app/chroma_db
-    env_file:
-      - ../.env
+      dockerfile: docker/Dockerfile.bot_config
+    container_name: brian
+    restart: unless-stopped
     environment:
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
-      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
-      - BOT_NAME=Brian
-      - BOT_PORT=5002
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      orchestrator:
-        condition: service_healthy
+      - PYTHONUNBUFFERED=1
+      - BRIAN_BOT_PORT=5007
+      # Note: No LLM dependencies - all character responses generated by orchestrator
+    ports:
+      - "5007:5007"
+    command: ["gunicorn", "--preload", "--timeout", "60", "-w", "1", "-b", "0.0.0.0:5007", "src.app.bots.brian_bot:app"]
     networks:
       - bot_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5007/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
-    restart: unless-stopped
 
+  # Stewie Character Config Service (lightweight - config/metadata only)
   stewie:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.bot
-    command: ["./scripts/start-bot.sh", "python", "-m", "src.app.bots.stewie_bot"]
-    ports:
-      - "5004:5004"
-    volumes:
-      - ..:/app
-      - ../logs:/app/logs
-      - ../chroma_db:/app/chroma_db
-    env_file:
-      - ../.env
+      dockerfile: docker/Dockerfile.bot_config
+    container_name: stewie
+    restart: unless-stopped
     environment:
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
-      - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
-      - BOT_NAME=Stewie
-      - BOT_PORT=5004
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      orchestrator:
-        condition: service_healthy
+      - PYTHONUNBUFFERED=1
+      - STEWIE_BOT_PORT=5008
+      # Note: No LLM dependencies - all character responses generated by orchestrator
+    ports:
+      - "5008:5008"
+    command: ["gunicorn", "--preload", "--timeout", "60", "-w", "1", "-b", "0.0.0.0:5008", "src.app.bots.stewie_bot:app"]
     networks:
       - bot_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # RAG Crawler Service (handles web scraping and vector database population)
+  rag-crawler:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rag_crawler
+    container_name: rag-crawler
+    restart: unless-stopped  # Auto-restart to run periodic checks
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RAG_CRAWLER_PORT=5009
+      - CHROMA_DB_PATH=/app/chroma_db
+      - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
+      - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
+      - MONGO_DB_NAME=discord_bot_conversations
+      - FANDOM_WIKI_START_URL=${FANDOM_WIKI_START_URL:-https://familyguy.fandom.com/wiki/Main_Page}
+      - FANDOM_WIKI_MAX_PAGES=${FANDOM_WIKI_MAX_PAGES:-100}
+      - FANDOM_WIKI_CRAWL_DELAY=${FANDOM_WIKI_CRAWL_DELAY:-1}
+      # Auto-crawl configuration
+      - AUTO_CRAWL_ENABLED=${AUTO_CRAWL_ENABLED:-true}
+      - AUTO_CRAWL_INTERVAL_DAYS=${AUTO_CRAWL_INTERVAL_DAYS:-30}
+      - AUTO_CRAWL_CHECK_INTERVAL_HOURS=${AUTO_CRAWL_CHECK_INTERVAL_HOURS:-24}
+    ports:
+      - "5009:5009"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    volumes:
+      # Share vector database with RAG retriever
+      - ../chroma_db:/app/chroma_db
+    command: ["gunicorn", "--preload", "--timeout", "120", "-w", "1", "-b", "0.0.0.0:5009", "src.app.rag_crawler.crawler_service:app"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5009/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
       start_period: 60s
-    restart: unless-stopped
+    # Runs independently - not a dependency for other services
+
+volumes:
+  mongodb_data:
 
 networks:
   bot_network:
-    driver: bridge
-
-volumes:
-  mongodb_data: 
+    driver: bridge 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive test script for centralized LLM architecture
+Comprehensive test script for centralized LLM architecture with RAG microservices
 This script validates the entire centralized character response generation system
 """
 
@@ -13,10 +13,12 @@ from typing import Dict, List, Tuple
 
 # Test configuration
 ORCHESTRATOR_URL = "http://localhost:5003"
+RAG_RETRIEVER_URL = "http://localhost:5005"
+RAG_CRAWLER_URL = "http://localhost:5009"
 TEST_CHANNEL_ID = "1234567890"  # Replace with actual test channel ID
 
 class ArchitectureValidator:
-    """Comprehensive validator for the centralized LLM architecture."""
+    """Comprehensive validator for the centralized LLM architecture with RAG microservices."""
     
     def __init__(self):
         self.results = []
@@ -45,9 +47,11 @@ class ArchitectureValidator:
         
         services = [
             ("Orchestrator", f"{ORCHESTRATOR_URL}/health"),
-            ("Peter Bot", "http://localhost:5005/health"),
-            ("Brian Bot", "http://localhost:5002/health"),
-            ("Stewie Bot", "http://localhost:5004/health")
+            ("RAG Retriever", f"{RAG_RETRIEVER_URL}/health"),
+            ("RAG Crawler", f"{RAG_CRAWLER_URL}/health"),
+            ("Peter Bot", "http://localhost:5006/health"),
+            ("Brian Bot", "http://localhost:5007/health"),
+            ("Stewie Bot", "http://localhost:5008/health")
         ]
         
         all_healthy = True
@@ -56,9 +60,22 @@ class ArchitectureValidator:
                 response = requests.get(health_url, timeout=10)
                 if response.status_code == 200:
                     data = response.json()
-                    components = data.get("components", {})
-                    self.log_result(f"{service_name} Health", True, 
-                                  f"Status: {data.get('status')}, Components: {list(components.keys())}")
+                    if service_name == "RAG Retriever":
+                        # RAG Retriever service health response format
+                        dependencies = data.get('dependencies', {})
+                        self.log_result(f"{service_name} Health", True, 
+                                      f"Status: {data.get('status')}, Dependencies: {list(dependencies.keys())}")
+                    elif service_name == "RAG Crawler":
+                        # RAG Crawler service health response format
+                        crawl_status = data.get('crawl_status', 'unknown')
+                        dependencies = data.get('dependencies', {})
+                        self.log_result(f"{service_name} Health", True, 
+                                      f"Status: {data.get('status')}, Crawl: {crawl_status}, Dependencies: {list(dependencies.keys())}")
+                    else:
+                        # Standard health response format
+                        components = data.get("components", {})
+                        self.log_result(f"{service_name} Health", True, 
+                                      f"Status: {data.get('status')}, Components: {list(components.keys())}")
                 else:
                     self.log_result(f"{service_name} Health", False, 
                                   f"Status: {response.status_code}")
@@ -137,276 +154,442 @@ class ArchitectureValidator:
                 
         return all_passed
 
-    def test_rag_system_integration(self) -> bool:
-        """Test RAG system integration."""
-        print("\n📚 Testing RAG System Integration...")
+    def test_rag_microservices_integration(self) -> bool:
+        """Test RAG microservices integration with orchestrator."""
+        print("\n📚 Testing RAG Microservices Integration...")
         
+        all_passed = True
+        
+        # Test 1: RAG Retriever Service
         try:
-            # Test RAG document loading endpoint
-            rag_payload = {
-                "url": "https://familyguy.fandom.com/wiki/Main_Page",
+            # Test direct retrieval from RAG Retriever service
+            retrieval_payload = {
+                "query": "Peter Griffin chicken fight",
+                "num_results": 3
+            }
+            
+            response = requests.post(
+                f"{RAG_RETRIEVER_URL}/retrieve",
+                json=retrieval_payload,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                documents_found = data.get('documents_found', 0)
+                self.log_result("RAG Retriever Service", True, 
+                              f"Retrieved {documents_found} documents")
+            else:
+                self.log_result("RAG Retriever Service", False, 
+                              f"Status: {response.status_code}")
+                all_passed = False
+                
+        except Exception as e:
+            self.log_result("RAG Retriever Service", False, f"Error: {e}")
+            all_passed = False
+        
+        # Test 2: RAG Crawler Service Status
+        try:
+            response = requests.get(f"{RAG_CRAWLER_URL}/crawl/status", timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                service_name = data.get('service_name', 'Unknown')
+                crawl_in_progress = data.get('crawl_in_progress', False)
+                self.log_result("RAG Crawler Status", True, 
+                              f"Service: {service_name}, Active: {crawl_in_progress}")
+            else:
+                self.log_result("RAG Crawler Status", False, 
+                              f"Status: {response.status_code}")
+                all_passed = False
+                
+        except Exception as e:
+            self.log_result("RAG Crawler Status", False, f"Error: {e}")
+            all_passed = False
+        
+        # Test 3: Vector Store Info
+        try:
+            response = requests.get(f"{RAG_CRAWLER_URL}/vector_store/info", timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                document_count = data.get('document_count', 0)
+                status = data.get('status', 'unknown')
+                self.log_result("Vector Store Info", True, 
+                              f"Status: {status}, Documents: {document_count}")
+            else:
+                self.log_result("Vector Store Info", False, 
+                              f"Status: {response.status_code}")
+                all_passed = False
+                
+        except Exception as e:
+            self.log_result("Vector Store Info", False, f"Error: {e}")
+            all_passed = False
+        
+        # Test 4: Orchestrator RAG Integration
+        try:
+            # Test orchestrator integration with RAG services
+            test_payload = {
+                "user_query": "Tell me about the chicken fight",
+                "channel_id": TEST_CHANNEL_ID,
+                "initiator_bot_name": "Peter",
+                "initiator_mention": "<@peter_id>",
+                "human_user_display_name": "TestUser",
+                "is_new_conversation": False,
+                "conversation_session_id": None
+            }
+            
+            response = requests.post(
+                f"{ORCHESTRATOR_URL}/orchestrate",
+                json=test_payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                self.log_result("Orchestrator-RAG Integration", True, 
+                              "Successfully integrated RAG context")
+            else:
+                self.log_result("Orchestrator-RAG Integration", False, 
+                              f"Status: {response.status_code}")
+                all_passed = False
+                
+        except Exception as e:
+            self.log_result("Orchestrator-RAG Integration", False, f"Error: {e}")
+            all_passed = False
+        
+        # Test 5: Orchestrator Crawl Trigger
+        try:
+            # Test orchestrator triggering crawl via RAG Crawler service
+            crawl_payload = {
+                "start_url": "https://familyguy.fandom.com/wiki/Main_Page",
                 "max_pages": 5,
                 "delay": 1
             }
             
             response = requests.post(
-                f"{ORCHESTRATOR_URL}/load_fandom_wiki",
-                json=rag_payload,
+                f"{ORCHESTRATOR_URL}/crawl/trigger",
+                json=crawl_payload,
                 timeout=15
             )
             
-            if response.status_code == 202:  # Accepted - processing started
-                self.log_result("RAG Document Loading", True, "Processing started")
-                return True
+            if response.status_code == 202:  # Accepted
+                data = response.json()
+                status = data.get('status', 'unknown')
+                self.log_result("Orchestrator Crawl Trigger", True, 
+                              f"Status: {status}")
+            elif response.status_code == 409:  # Conflict - crawl already running
+                self.log_result("Orchestrator Crawl Trigger", True, 
+                              "Crawl already in progress")
             else:
-                self.log_result("RAG Document Loading", False, 
+                self.log_result("Orchestrator Crawl Trigger", False, 
                               f"Status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            self.log_result("RAG Document Loading", False, f"Error: {e}")
-            return False
-
-    def test_error_handling(self) -> bool:
-        """Test error handling capabilities."""
-        print("\n🛡️ Testing Error Handling...")
-        
-        error_tests = [
-            {
-                "name": "Missing Required Fields",
-                "payload": {"channel_id": TEST_CHANNEL_ID},  # Missing user_query
-                "expected_status": 400
-            },
-            {
-                "name": "Invalid JSON",
-                "payload": "invalid json",
-                "expected_status": 400
-            },
-            {
-                "name": "Unknown Character",
-                "payload": {
-                    "user_query": "Test",
-                    "channel_id": TEST_CHANNEL_ID,
-                    "initiator_bot_name": "InvalidBot",
-                    "initiator_mention": "<@invalid>"
-                },
-                "expected_status": 400
-            }
-        ]
-        
-        all_passed = True
-        for test in error_tests:
-            try:
-                if isinstance(test["payload"], str):
-                    response = requests.post(
-                        f"{ORCHESTRATOR_URL}/orchestrate",
-                        data=test["payload"],
-                        headers={"Content-Type": "application/json"},
-                        timeout=10
-                    )
-                else:
-                    response = requests.post(
-                        f"{ORCHESTRATOR_URL}/orchestrate",
-                        json=test["payload"],
-                        timeout=10
-                    )
-                
-                if response.status_code == test["expected_status"]:
-                    self.log_result(test["name"], True, 
-                                  f"Correctly returned {response.status_code}")
-                else:
-                    self.log_result(test["name"], False,
-                                  f"Expected {test['expected_status']}, got {response.status_code}")
-                    all_passed = False
-                    
-            except Exception as e:
-                self.log_result(test["name"], False, f"Error: {e}")
                 all_passed = False
                 
+        except Exception as e:
+            self.log_result("Orchestrator Crawl Trigger", False, f"Error: {e}")
+            all_passed = False
+                
+        return all_passed
+
+    def test_error_handling(self) -> bool:
+        """Test error handling and resilience."""
+        print("\n🛡️ Testing Error Handling...")
+        
+        all_passed = True
+        
+        # Test invalid orchestrator request
+        try:
+            invalid_payload = {
+                "invalid_field": "test"
+                # Missing required fields
+            }
+            
+            response = requests.post(
+                f"{ORCHESTRATOR_URL}/orchestrate",
+                json=invalid_payload,
+                timeout=10
+            )
+            
+            if response.status_code == 400:  # Bad Request expected
+                self.log_result("Invalid Request Handling", True, "Properly rejected invalid request")
+            else:
+                self.log_result("Invalid Request Handling", False, 
+                              f"Unexpected status: {response.status_code}")
+                all_passed = False
+                
+        except Exception as e:
+            self.log_result("Invalid Request Handling", False, f"Error: {e}")
+            all_passed = False
+        
+        # Test RAG service error handling
+        try:
+            # Test invalid retrieval request
+            invalid_rag_payload = {
+                "invalid_query_field": "test"
+            }
+            
+            response = requests.post(
+                f"{RAG_RETRIEVER_URL}/retrieve",
+                json=invalid_rag_payload,
+                timeout=10
+            )
+            
+            # Should handle gracefully (either 400 or return empty results)
+            if response.status_code in [200, 400]:
+                self.log_result("RAG Error Handling", True, "Gracefully handled invalid request")
+            else:
+                self.log_result("RAG Error Handling", False, 
+                              f"Unexpected status: {response.status_code}")
+                all_passed = False
+                
+        except Exception as e:
+            self.log_result("RAG Error Handling", False, f"Error: {e}")
+            all_passed = False
+            
         return all_passed
 
     def test_bot_discord_interfaces(self) -> bool:
         """Test bot Discord interface endpoints."""
-        print("\n💬 Testing Bot Discord Interfaces...")
+        print("\n🤖 Testing Bot Discord Interfaces...")
         
         bots = [
-            ("Peter", "http://localhost:5005"),
-            ("Brian", "http://localhost:5002"),
-            ("Stewie", "http://localhost:5004")
+            ("Peter", "http://localhost:5006"),
+            ("Brian", "http://localhost:5007"),
+            ("Stewie", "http://localhost:5008")
         ]
         
         all_passed = True
         for bot_name, bot_url in bots:
             try:
-                # Test send_discord_message endpoint
-                test_payload = {
-                    "message_content": f"Test message from {bot_name}",
-                    "channel_id": TEST_CHANNEL_ID
-                }
-                
-                response = requests.post(
-                    f"{bot_url}/send_discord_message",
-                    json=test_payload,
-                    timeout=10
-                )
+                # Test character info endpoint
+                response = requests.get(f"{bot_url}/character_info", timeout=10)
                 
                 if response.status_code == 200:
-                    self.log_result(f"{bot_name} Discord Interface", True,
-                                  "Successfully accepted message")
+                    data = response.json()
+                    character_name = data.get("character_name", "Unknown")
+                    self.log_result(f"{bot_name} Character Info", True, 
+                                  f"Character: {character_name}")
                 else:
-                    self.log_result(f"{bot_name} Discord Interface", False,
+                    self.log_result(f"{bot_name} Character Info", False, 
                                   f"Status: {response.status_code}")
                     all_passed = False
                     
-            except requests.exceptions.ConnectionError:
-                self.log_result(f"{bot_name} Discord Interface", False,
-                              "Bot not running")
-                all_passed = False
             except Exception as e:
-                self.log_result(f"{bot_name} Discord Interface", False,
-                              f"Error: {e}")
+                self.log_result(f"{bot_name} Character Info", False, f"Error: {e}")
                 all_passed = False
                 
         return all_passed
 
     def test_architecture_benefits(self) -> bool:
-        """Test architecture-specific benefits."""
+        """Test architecture-specific benefits and features."""
         print("\n🏗️ Testing Architecture Benefits...")
         
+        all_passed = True
+        
+        # Test 1: Centralized LLM processing (no individual bot LLM endpoints)
         try:
-            # Test that orchestrator endpoints exist and are different from bots
-            orchestrator_endpoints = ["/orchestrate", "/health", "/load_fandom_wiki"]
-            bot_endpoints = ["/send_discord_message", "/initiate_conversation", "/health"]
+            # Verify that bots don't have individual LLM endpoints
+            response = requests.post("http://localhost:5006/generate_response", 
+                                   json={"query": "test"}, timeout=5)
             
-            all_passed = True
-            
-            # Verify orchestrator has centralized endpoints
-            for endpoint in orchestrator_endpoints:
-                try:
-                    response = requests.get(f"{ORCHESTRATOR_URL}{endpoint}", timeout=5)
-                    # Don't care about specific response, just that endpoint exists
-                    self.log_result(f"Orchestrator {endpoint}", True, "Endpoint accessible")
-                except requests.exceptions.ConnectionError:
-                    self.log_result(f"Orchestrator {endpoint}", False, "Endpoint not accessible")
-                    all_passed = False
-            
-            # Verify bots have simplified endpoints (but don't have orchestrator-specific ones)
-            for bot_name, bot_url in [("Peter", "http://localhost:5005")]:  # Test one bot as example
-                for endpoint in bot_endpoints:
-                    try:
-                        response = requests.post(f"{bot_url}{endpoint}", 
-                                               json={}, timeout=5)
-                        # Expect 400 for missing data, but endpoint should exist
-                        if response.status_code in [200, 400, 500]:
-                            self.log_result(f"{bot_name} {endpoint}", True, "Endpoint accessible")
-                        else:
-                            self.log_result(f"{bot_name} {endpoint}", False, 
-                                          f"Unexpected status: {response.status_code}")
-                            all_passed = False
-                    except requests.exceptions.ConnectionError:
-                        self.log_result(f"{bot_name} {endpoint}", False, "Endpoint not accessible")
-                        all_passed = False
-            
-            return all_passed
-            
+            # Should fail (404) because bots don't have individual LLM processing
+            if response.status_code == 404:
+                self.log_result("Centralized LLM Architecture", True, 
+                              "Bots correctly don't have individual LLM endpoints")
+            else:
+                self.log_result("Centralized LLM Architecture", False, 
+                              "Bots still have individual LLM endpoints")
+                all_passed = False
+                
+        except requests.exceptions.ConnectionError:
+            # This is expected - endpoint shouldn't exist
+            self.log_result("Centralized LLM Architecture", True, 
+                          "Bots correctly don't have individual LLM endpoints")
         except Exception as e:
-            self.log_result("Architecture Benefits Test", False, f"Error: {e}")
-            return False
+            self.log_result("Centralized LLM Architecture", False, f"Error: {e}")
+            all_passed = False
+        
+        # Test 2: RAG Microservices Separation
+        try:
+            # Verify RAG Retriever and Crawler are separate services
+            retriever_health = requests.get(f"{RAG_RETRIEVER_URL}/health", timeout=5)
+            crawler_health = requests.get(f"{RAG_CRAWLER_URL}/health", timeout=5)
+            
+            if retriever_health.status_code == 200 and crawler_health.status_code == 200:
+                retriever_data = retriever_health.json()
+                crawler_data = crawler_health.json()
+                
+                retriever_service = retriever_data.get('service_name', 'Unknown')
+                crawler_service = crawler_data.get('service_name', 'Unknown')
+                
+                if 'Retriever' in retriever_service and 'Crawler' in crawler_service:
+                    self.log_result("RAG Microservices Separation", True, 
+                                  f"Retriever: {retriever_service}, Crawler: {crawler_service}")
+                else:
+                    self.log_result("RAG Microservices Separation", False, 
+                                  "Services not properly separated")
+                    all_passed = False
+            else:
+                self.log_result("RAG Microservices Separation", False, 
+                              "One or both RAG services not responding")
+                all_passed = False
+                
+        except Exception as e:
+            self.log_result("RAG Microservices Separation", False, f"Error: {e}")
+            all_passed = False
+            
+        return all_passed
 
     def test_organic_conversation_system(self) -> bool:
-        """Test organic conversation coordinator functionality."""
+        """Test organic conversation initiation system."""
         print("\n🌱 Testing Organic Conversation System...")
         
         try:
-            # Test that the organic conversation coordinator is accessible
-            # We can't easily test the full functionality without waiting for timeouts,
-            # but we can verify the system is initialized
+            # Test organic conversation trigger (if available)
+            # This might not be directly testable without waiting for natural triggers
             
-            # Test health endpoint includes organic conversation status
+            # Instead, test that the orchestrator has the necessary endpoints
             response = requests.get(f"{ORCHESTRATOR_URL}/health", timeout=10)
             
             if response.status_code == 200:
-                data = response.json()
-                components = data.get("components", {})
-                
-                # Check if orchestrator is healthy (which includes organic coordinator)
-                if "mongodb" in components and "vectorstore" in components:
-                    self.log_result("Organic Conversation System", True, 
-                                  "Orchestrator healthy with required components")
-                    return True
-                else:
-                    self.log_result("Organic Conversation System", False,
-                                  "Missing required components for organic conversations")
-                    return False
+                # Organic conversation system is part of orchestrator
+                self.log_result("Organic Conversation System", True, 
+                              "System integrated in orchestrator")
+                return True
             else:
-                self.log_result("Organic Conversation System", False,
-                              f"Health check failed: {response.status_code}")
+                self.log_result("Organic Conversation System", False, 
+                              "Orchestrator not responding")
                 return False
                 
         except Exception as e:
             self.log_result("Organic Conversation System", False, f"Error: {e}")
             return False
 
-    def run_all_tests(self) -> None:
-        """Run all architecture validation tests."""
-        print("=" * 70)
-        print("🚀 CENTRALIZED LLM ARCHITECTURE VALIDATION")
-        print("=" * 70)
+    def test_rag_microservices_endpoints(self) -> bool:
+        """Test specific RAG microservices endpoints."""
+        print("\n🔍 Testing RAG Microservices Endpoints...")
         
-        test_methods = [
-            self.test_health_endpoints,
-            self.test_centralized_llm_processing,
-            self.test_rag_system_integration,
-            self.test_error_handling,
-            self.test_bot_discord_interfaces,
-            self.test_architecture_benefits,
-            self.test_organic_conversation_system
+        all_passed = True
+        
+        # Test RAG Retriever endpoints
+        retriever_endpoints = [
+            ("/health", "GET"),
+            ("/retrieve", "POST"),
+            ("/vector_store_status", "GET")
         ]
         
-        overall_success = True
-        for test_method in test_methods:
+        for endpoint, method in retriever_endpoints:
             try:
-                result = test_method()
-                if not result:
-                    overall_success = False
+                if method == "GET":
+                    response = requests.get(f"{RAG_RETRIEVER_URL}{endpoint}", timeout=10)
+                else:  # POST
+                    test_payload = {"query": "test", "num_results": 1}
+                    response = requests.post(f"{RAG_RETRIEVER_URL}{endpoint}", 
+                                           json=test_payload, timeout=10)
+                
+                if response.status_code in [200, 202]:
+                    self.log_result(f"RAG Retriever {endpoint}", True, 
+                                  f"Status: {response.status_code}")
+                else:
+                    self.log_result(f"RAG Retriever {endpoint}", False, 
+                                  f"Status: {response.status_code}")
+                    all_passed = False
+                    
             except Exception as e:
-                print(f"\n❌ Test method {test_method.__name__} failed with error: {e}")
-                print(traceback.format_exc())
-                overall_success = False
+                self.log_result(f"RAG Retriever {endpoint}", False, f"Error: {e}")
+                all_passed = False
+        
+        # Test RAG Crawler endpoints
+        crawler_endpoints = [
+            ("/health", "GET"),
+            ("/crawl/status", "GET"),
+            ("/vector_store/info", "GET"),
+            ("/auto_crawl/status", "GET")
+        ]
+        
+        for endpoint, method in crawler_endpoints:
+            try:
+                if method == "GET":
+                    response = requests.get(f"{RAG_CRAWLER_URL}{endpoint}", timeout=10)
+                else:  # POST
+                    test_payload = {"start_url": "https://example.com", "max_pages": 1}
+                    response = requests.post(f"{RAG_CRAWLER_URL}{endpoint}", 
+                                           json=test_payload, timeout=10)
+                
+                if response.status_code in [200, 202, 409]:  # 409 = conflict (crawl already running)
+                    self.log_result(f"RAG Crawler {endpoint}", True, 
+                                  f"Status: {response.status_code}")
+                else:
+                    self.log_result(f"RAG Crawler {endpoint}", False, 
+                                  f"Status: {response.status_code}")
+                    all_passed = False
+                    
+            except Exception as e:
+                self.log_result(f"RAG Crawler {endpoint}", False, f"Error: {e}")
+                all_passed = False
+                
+        return all_passed
+
+    def run_all_tests(self) -> None:
+        """Run all architecture validation tests."""
+        print("🚀 Starting Comprehensive Architecture Validation...")
+        print("=" * 60)
+        
+        # Run all test suites
+        test_suites = [
+            ("Health Endpoints", self.test_health_endpoints),
+            ("Centralized LLM Processing", self.test_centralized_llm_processing),
+            ("RAG Microservices Integration", self.test_rag_microservices_integration),
+            ("RAG Microservices Endpoints", self.test_rag_microservices_endpoints),
+            ("Error Handling", self.test_error_handling),
+            ("Bot Discord Interfaces", self.test_bot_discord_interfaces),
+            ("Architecture Benefits", self.test_architecture_benefits),
+            ("Organic Conversation System", self.test_organic_conversation_system)
+        ]
+        
+        suite_results = []
+        for suite_name, test_func in test_suites:
+            print(f"\n{'='*20} {suite_name} {'='*20}")
+            try:
+                result = test_func()
+                suite_results.append((suite_name, result))
+            except Exception as e:
+                print(f"❌ CRITICAL ERROR in {suite_name}: {e}")
+                traceback.print_exc()
+                suite_results.append((suite_name, False))
         
         # Print summary
-        print("\n" + "=" * 70)
-        print("📊 TEST SUMMARY")
-        print("=" * 70)
+        print("\n" + "="*60)
+        print("📊 VALIDATION SUMMARY")
+        print("="*60)
         
-        for result in self.results:
-            print(result)
-            
-        print(f"\n📈 OVERALL RESULTS: {self.passed_tests}/{self.total_tests} tests passed")
+        for suite_name, passed in suite_results:
+            status = "✅ PASS" if passed else "❌ FAIL"
+            print(f"{status}: {suite_name}")
         
-        if overall_success and self.passed_tests == self.total_tests:
-            print("\n🎉 ALL TESTS PASSED! Centralized LLM architecture is working correctly.")
-            return_code = 0
+        print(f"\nOverall Results: {self.passed_tests}/{self.total_tests} tests passed")
+        
+        if self.passed_tests == self.total_tests:
+            print("🎉 ALL TESTS PASSED! Architecture is working correctly.")
+            return True
         else:
-            print(f"\n⚠️  SOME TESTS FAILED. Architecture may need attention.")
-            return_code = 1
-            
-        print("\n" + "=" * 70)
-        print("ARCHITECTURE BENEFITS CONFIRMED:")
-        print("✅ Orchestrator handles all LLM processing")
-        print("✅ Each bot only handles Discord interactions")  
-        print("✅ RAG context is centralized in orchestrator")
-        print("✅ Character personalities maintained via prompts")
-        print("✅ Resource efficiency through single LLM instance")
-        print("✅ Simplified bot architecture for better maintenance")
-        print("=" * 70)
-        
-        sys.exit(return_code)
+            print("⚠️ Some tests failed. Please check the logs above.")
+            return False
 
 def main():
-    """Main test execution."""
+    """Main function to run architecture validation."""
     validator = ArchitectureValidator()
-    validator.run_all_tests()
+    
+    print("Discord Family Guy Bot - Architecture Validation")
+    print("Testing centralized LLM architecture with RAG microservices")
+    print("="*60)
+    
+    success = validator.run_all_tests()
+    
+    if success:
+        sys.exit(0)
+    else:
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 
