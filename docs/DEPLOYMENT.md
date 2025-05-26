@@ -63,7 +63,22 @@ The system consists of 8 main services:
    # Quality Control & Fine-Tuning
    FINE_TUNING_ENABLED=true
    QUALITY_CONTROL_ENABLED=true
+   ADAPTIVE_QUALITY_CONTROL_ENABLED=true
+   ADAPTIVE_CONTEXT_WEIGHTING_ENABLED=true
+   ADAPTIVE_ANTI_HALLUCINATION_ENABLED=true
+   
+   # Adaptive Quality Thresholds
+   COLD_START_THRESHOLD=30.0
+   WARM_CONVERSATION_THRESHOLD=60.0
+   HOT_CONVERSATION_THRESHOLD=75.0
+   
+   # Conversation State Boundaries
+   CONVERSATION_HISTORY_COLD_LIMIT=6
+   CONVERSATION_HISTORY_WARM_LIMIT=20
+   
+   # Legacy settings (fallbacks)
    OPTIMIZATION_THRESHOLD=0.7
+   QUALITY_CONTROL_MIN_RATING=70.0
    
    # Database
    MONGO_URI=mongodb://admin:your_secure_password@mongodb:27017/?authSource=admin

@@ -14,7 +14,8 @@ This isn't just another Discord bot. It's a comprehensive system built for authe
 *   🐳 **Dockerized Microservices**: Easy deployment and management with Docker Compose.
 *   📚 **Advanced RAG Microservices**: Separated RAG Retriever (real-time context) and RAG Crawler (web scraping) services for optimal performance and scaling.
 *   🔧 **Supervised Fine-Tuning System**: Continuously improves character responses based on automated and (optionally) user-provided feedback.
-*   📊 **Quality Control Mechanism**: Automatically assesses and filters responses to maintain character authenticity.
+*   📊 **Adaptive Quality Control System**: Revolutionary system that adjusts quality standards based on conversation richness (30-75/100 thresholds) and provides character-aware anti-hallucination measures.
+*   🚫 **NO_FALLBACK_MODE**: Advanced infinite retry system that eliminates generic fallback responses, continuously retrying until high-quality, contextual responses are generated.
 *   🌱 **Enhanced Organic Conversation Coordinator**: Bots can intelligently initiate conversations and automatically create follow-up responses for natural multi-character interactions.
 *   🎭 **Authentic Character Personalities**: Deeply detailed prompts ensure Peter, Brian, and Stewie behave and speak like their show counterparts.
 *   📝 **Persistent Conversation History**: Stored in MongoDB, allowing for long-term memory and context.
@@ -171,6 +172,109 @@ Once setup is complete:
    - `@Brian tell me something intellectual`
    - `@Stewie what are you plotting?`
 
+## 🎯 Advanced Features Deep Dive
+
+### 🚫 NO_FALLBACK_MODE: Infinite Retry System
+
+**Revolutionary approach to response quality**: Instead of using generic fallback messages when response generation fails, the system continuously retries until a valid, high-quality response is generated.
+
+```mermaid
+graph TD
+    A[User Query] --> B[Generate Response]
+    B --> C{Quality Check}
+    C -->|Pass| D[Send to Discord]
+    C -->|Fail| E{NO_FALLBACK_MODE?}
+    E -->|False| F[Use Fallback Response]
+    E -->|True| G{Max Retries?}
+    G -->|No| H[Enhanced Retry Context]
+    H --> I[Exponential Backoff]
+    I --> J[Include Previous Failures]
+    J --> B
+    G -->|Yes| K[Return Error]
+    F --> D
+    
+    style E fill:#ff9999
+    style H fill:#99ff99
+    style I fill:#99ff99
+    style J fill:#99ff99
+```
+
+**Key Benefits**:
+- **No Generic Responses**: Eliminates fallbacks like "Hehehe, my brain just went blank"
+- **Higher Quality**: Only authentic, contextual responses are sent
+- **Intelligent Learning**: System learns from failures and improves on retries
+- **Character Consistency**: Maintains authenticity throughout retry process
+
+**Configuration**:
+```bash
+NO_FALLBACK_MODE=True
+MAX_RETRY_ATTEMPTS=10
+RETRY_BACKOFF_ENABLED=True
+RETRY_BACKOFF_MULTIPLIER=1.5
+```
+
+### 📊 Adaptive Quality Control System
+
+**Dynamic quality standards** that adjust based on conversation richness, ensuring appropriate expectations for different conversation stages.
+
+```mermaid
+graph LR
+    A[Conversation Analysis] --> B{Message Count & Quality}
+    B -->|0-6 messages| C[Cold Start<br/>30/100 threshold<br/>Very Lenient]
+    B -->|7-20 messages| D[Warm Conversation<br/>60/100 threshold<br/>Moderate Standards]
+    B -->|21+ messages| E[Hot Conversation<br/>75/100 threshold<br/>High Standards]
+    
+    C --> F[Enhanced Context Weighting]
+    D --> F
+    E --> F
+    
+    F --> G[Character-Aware<br/>Anti-Hallucination]
+    G --> H[Quality Assessment]
+    
+    style C fill:#ffcccc
+    style D fill:#ffffcc
+    style E fill:#ccffcc
+```
+
+**Progressive Adaptation**:
+- **Context Balance**: From RAG-heavy (40%) to conversation-focused (15% RAG)
+- **Response Length**: Adaptive limits based on conversation richness
+- **Anti-Hallucination**: Character-specific controls (Peter: strict, Brian: moderate, Stewie: lenient)
+
+### 🌱 Enhanced Organic Conversation Coordination
+
+**Dual-system approach** for natural multi-character interactions and proactive conversation initiation.
+
+```mermaid
+graph TD
+    A[Bot Response Sent] --> B[3-Second Delay]
+    B --> C[Follow-up Analysis]
+    C --> D{Triggers Detected?}
+    D -->|Yes| E[Select Responding Character]
+    E --> F[Generate Follow-up Response]
+    F --> G[Self-Orchestrate]
+    
+    H[Background Monitor] --> I{30+ Min Silence?}
+    I -->|Yes| J[Analyze Conversation Patterns]
+    J --> K[Select Initiator Character]
+    K --> L[RAG-Enhanced Starter]
+    L --> M[Self-Orchestrate]
+    
+    D -->|No| N[Continue Monitoring]
+    I -->|No| N
+    
+    G --> O[Discord Channel]
+    M --> O
+    
+    style C fill:#99ccff
+    style J fill:#ffcc99
+```
+
+**Character-Specific Triggers**:
+- **Peter**: Simple/crude topics → Brian responds intellectually, Stewie condescendingly
+- **Brian**: Intellectual content → Peter responds simply, Stewie competitively
+- **Stewie**: Evil plans/science → Others express concern/interest
+
 ## ✨ Advanced System Features Explained
 
 ### 📚 Retrieval Augmented Generation (RAG) - Microservices Architecture
@@ -210,11 +314,21 @@ Once setup is complete:
     *   **Crawling**: Triggered via `/crawl/trigger` endpoint on Orchestrator
     *   **Monitoring**: Health checks and status endpoints on both services
 
-### 🔧 Supervised Fine-Tuning & Quality Control
+### 🔧 Supervised Fine-Tuning & Adaptive Quality Control
 
-*   **Purpose**: To continuously improve the quality and authenticity of character responses over time.
+*   **Purpose**: To continuously improve the quality and authenticity of character responses over time with intelligent adaptation based on conversation context.
 *   **Fine-Tuning**: The system logs responses and (optionally) user-provided or LLM-generated quality ratings to MongoDB. This data can be used to further fine-tune the base `mistral-nemo` model or adjust prompts.
-*   **Quality Control**: Before sending a response, the Orchestrator can use an LLM-based assessment to rate its quality and adherence to character. If a response scores too low, it can be regenerated or a fallback can be used.
+*   **Adaptive Quality Control**: Revolutionary system that adjusts quality standards based on conversation richness:
+    *   **Cold Start** (0-6 messages): 30/100 threshold - extremely lenient for first interactions
+    *   **Warm Conversation** (7-20 messages): 60/100 threshold - moderate expectations with developing context
+    *   **Hot Conversation** (21+ messages): 75/100 threshold - high standards with rich conversation history
+*   **Enhanced Retry Context**: When responses are rejected, the system includes the rejected response and specific failure reasons in retry attempts, enabling faster learning and more targeted improvements
+*   **Character-Aware Anti-Hallucination**: Different characters get personalized anti-hallucination settings:
+    *   **Peter Griffin**: Stricter length controls (0.7x), higher risk assessment (1.2x), stricter validation (1.3x) - prevents rambling
+    *   **Brian Griffin**: Conversational length (1.0x), lower risk (0.8x), lenient strictness (0.9x) - enables natural sarcasm and self-deprecation
+    *   **Stewie Griffin**: Concise length (0.8x), lowest risk (0.6x), most lenient strictness (0.7x) - allows witty, cutting remarks
+*   **Retry-Based Length Validation**: Responses exceeding adaptive limits trigger regeneration instead of truncation, preserving quality
+*   **Character-Specific Conversation Guidance**: Dynamic prompts that adapt to conversation state and character personality
 *   **A/B Testing**: Allows for testing different prompt versions for a percentage of traffic.
 
 ### 🌱 Enhanced Organic Conversation Coordination
@@ -279,11 +393,11 @@ See `docs/REQUIREMENTS_OPTIMIZATION.md` for detailed information about the depen
     *   RAG Retriever: `http://localhost:5005/health`
     *   RAG Crawler: `http://localhost:5009/health`
     *   Character services: `http://localhost:5006-5008/health`
-*   **Fine-Tuning API Endpoints** (on Orchestrator, port 5003):
+*   **Fine-Tuning & Adaptive Quality Control API Endpoints** (on Orchestrator, port 5003):
     *   `/rate_response` (POST): Submit ratings for responses.
     *   `/optimization_report` (GET): View performance reports.
     *   `/fine_tuning_stats` (GET): Overall system stats.
-    *   `/quality_control_status` (GET): QC configuration and stats.
+    *   `/quality_control_status` (GET): Adaptive QC configuration, thresholds, and character-aware settings.
 *   **RAG Management**:
     *   `/crawl/trigger` (POST) on Orchestrator: Trigger new wiki crawl via RAG Crawler service
     *   `/crawl/status` (GET) on Orchestrator: Get crawl status from RAG Crawler service

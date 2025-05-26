@@ -86,7 +86,8 @@ This Family Guy Discord Bot system employs a microservices architecture, fully c
         *   Requests context retrieval from the RAG Retriever service for real-time queries.
         *   Triggers crawling operations via the RAG Crawler service for content updates.
         *   Integrates retrieved context into LLM prompts.
-    *   **Quality Control (QC)**: Optionally assesses generated responses using an LLM-based evaluation for authenticity, relevance, and safety before sending them out.
+    *   **Adaptive Quality Control (QC)**: Dynamically adjusts quality standards based on conversation richness (30-75/100 thresholds) and applies character-aware anti-hallucination measures. Uses LLM-based evaluation for authenticity, relevance, and safety with retry-based length validation.
+    *   **NO_FALLBACK_MODE**: Advanced infinite retry system that eliminates generic fallback responses, using enhanced retry context and exponential backoff to continuously attempt response generation until quality standards are met.
     *   **Supervised Fine-Tuning Support**: Logs responses and quality assessments to MongoDB. Provides API endpoints for submitting ratings and triggering prompt optimization processes.
     *   **Enhanced Organic Conversation Coordination**: Monitors channel activity for both follow-up opportunities (immediate multi-character responses) and organic conversation initiation (proactive conversation starters during silence periods).
     *   **Conversation History Management**: Loads and saves conversation history from/to MongoDB to provide context to the LLM.
@@ -325,4 +326,115 @@ graph TD
     B --> M[Discord API]
 ```
 
-This architecture provides a robust, scalable, and maintainable foundation for the Family Guy Discord Bot system, with clear separation of concerns and optimized resource utilization across different operational patterns. 
+## 8. Advanced Features Integration
+
+### 8.1. NO_FALLBACK_MODE Integration
+
+The NO_FALLBACK_MODE feature integrates seamlessly with the existing quality control and retry systems:
+
+```mermaid
+graph TD
+    A[User Query] --> B[Orchestrator]
+    B --> C[Generate Response]
+    C --> D[Quality Control]
+    D --> E{Quality Check}
+    E -->|Pass| F[Send to Discord]
+    E -->|Fail| G{NO_FALLBACK_MODE?}
+    
+    G -->|False| H[Traditional Path]
+    H --> I[Limited Retries]
+    I --> J[Fallback Response]
+    J --> F
+    
+    G -->|True| K[Enhanced Retry System]
+    K --> L[Enhanced Context]
+    L --> M[Exponential Backoff]
+    M --> N[Include Previous Failures]
+    N --> O{Max Retries?}
+    O -->|No| C
+    O -->|Yes| P[Return Error/None]
+    
+    style G fill:#ff9999
+    style K fill:#99ff99
+    style L fill:#99ff99
+    style M fill:#99ff99
+    style N fill:#99ff99
+```
+
+### 8.2. Adaptive Quality Control Flow
+
+The adaptive quality control system adjusts thresholds based on conversation richness:
+
+```mermaid
+graph LR
+    A[Conversation History] --> B[Analyze Message Count]
+    B --> C{Conversation Stage}
+    
+    C -->|0-6 messages| D[Cold Start<br/>30/100 threshold<br/>65% conversation context<br/>35% RAG context]
+    C -->|7-20 messages| E[Warm Conversation<br/>60/100 threshold<br/>80% conversation context<br/>20% RAG context]
+    C -->|21+ messages| F[Hot Conversation<br/>75/100 threshold<br/>85% conversation context<br/>15% RAG context]
+    
+    D --> G[Character-Aware Settings]
+    E --> G
+    F --> G
+    
+    G --> H[Peter: Strict Controls]
+    G --> I[Brian: Moderate Controls]
+    G --> J[Stewie: Lenient Controls]
+    
+    H --> K[Quality Assessment]
+    I --> K
+    J --> K
+    
+    style D fill:#ffcccc
+    style E fill:#ffffcc
+    style F fill:#ccffcc
+```
+
+### 8.3. Complete System Integration
+
+This diagram shows how all advanced features work together:
+
+```mermaid
+graph TD
+    A[User Message] --> B[Discord Handler]
+    B --> C[Orchestrator]
+    
+    C --> D[Load Conversation History]
+    D --> E[Adaptive Quality Threshold Calculation]
+    E --> F[Character-Aware Settings]
+    
+    C --> G[RAG Retriever]
+    G --> H[Context Weighting]
+    H --> I[Adaptive Context Balance]
+    
+    C --> J[Generate Response]
+    J --> K[Quality Control]
+    K --> L{Quality Check}
+    
+    L -->|Pass| M[Enhanced Retry Context Logging]
+    M --> N[Send to Discord]
+    
+    L -->|Fail| O{NO_FALLBACK_MODE?}
+    O -->|True| P[Infinite Retry System]
+    O -->|False| Q[Traditional Fallback]
+    
+    P --> R[Enhanced Context]
+    R --> S[Exponential Backoff]
+    S --> T[Previous Failure Analysis]
+    T --> U{Max Retries?}
+    U -->|No| J
+    U -->|Yes| V[Graceful Failure]
+    
+    Q --> W[Limited Retries]
+    W --> X[Fallback Response]
+    X --> N
+    
+    style O fill:#ff9999
+    style P fill:#99ff99
+    style R fill:#99ff99
+    style S fill:#99ff99
+    style T fill:#99ff99
+```
+
+This architecture provides a robust, scalable, and maintainable foundation for the Family Guy Discord Bot system, with clear separation of concerns, optimized resource utilization across different operational patterns, and advanced quality control features that ensure high-quality, authentic character responses. 

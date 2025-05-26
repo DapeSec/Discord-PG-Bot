@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -32,14 +33,72 @@ MIN_RATINGS_FOR_OPTIMIZATION = int(os.getenv("MIN_RATINGS_FOR_OPTIMIZATION", "10
 AB_TEST_PERCENTAGE = float(os.getenv("AB_TEST_PERCENTAGE", "0.2"))  # 20% traffic for A/B testing
 
 # Quality Control Configuration (Optimized for performance)
-QUALITY_CONTROL_ENABLED = os.getenv("QUALITY_CONTROL_ENABLED", "true").lower() == "true"
-QUALITY_CONTROL_MIN_RATING = float(os.getenv("QUALITY_CONTROL_MIN_RATING", "3.0"))  # Minimum acceptable rating (raised to prevent mixed conversations)
-QUALITY_CONTROL_MAX_RETRIES = int(os.getenv("QUALITY_CONTROL_MAX_RETRIES", "2"))  # Max retries for quality (reduced for performance)
+QUALITY_CONTROL_ENABLED = os.getenv("QUALITY_CONTROL_ENABLED", "True").lower() == "true"
+QUALITY_CONTROL_MIN_RATING = float(os.getenv("QUALITY_CONTROL_MIN_RATING", "70"))  # Minimum acceptable rating on 1-100 scale (only high-quality responses)
+QUALITY_CONTROL_MAX_RETRIES = int(os.getenv("QUALITY_CONTROL_MAX_RETRIES", "3"))  # Max retries for quality (increased for 75/100 threshold)
 
 # Add a global variable to track recent responses
 recent_responses_cache = {}
 DUPLICATE_CACHE_SIZE = 50  # Keep last 50 responses per character
 DUPLICATE_SIMILARITY_THRESHOLD = 0.8  # 80% similarity threshold
+
+# Anti-hallucination configuration
+ANTI_HALLUCINATION_ENABLED = os.getenv("ANTI_HALLUCINATION_ENABLED", "true").lower() == "true"
+MAX_CONTEXT_INJECTION = int(os.getenv("MAX_CONTEXT_INJECTION", "200"))  # Limit RAG context length
+CONVERSATION_FOCUS_WEIGHT = float(os.getenv("CONVERSATION_FOCUS_WEIGHT", "0.75"))  # Prioritize conversation over RAG
+
+# Adaptive Quality Control Configuration
+ADAPTIVE_QUALITY_CONTROL_ENABLED = os.getenv("ADAPTIVE_QUALITY_CONTROL_ENABLED", "True").lower() == "true"
+COLD_START_THRESHOLD = float(os.getenv("COLD_START_THRESHOLD", "30.0"))  # Extremely lenient threshold for cold starts
+WARM_CONVERSATION_THRESHOLD = float(os.getenv("WARM_CONVERSATION_THRESHOLD", "60.0"))  # Medium threshold for some history
+HOT_CONVERSATION_THRESHOLD = float(os.getenv("HOT_CONVERSATION_THRESHOLD", "75.0"))  # High threshold for rich history
+CONVERSATION_HISTORY_COLD_LIMIT = int(os.getenv("CONVERSATION_HISTORY_COLD_LIMIT", "6"))  # Messages for cold start (0-6 messages)
+CONVERSATION_HISTORY_WARM_LIMIT = int(os.getenv("CONVERSATION_HISTORY_WARM_LIMIT", "20"))  # Messages for warm conversation (7-20 messages)
+
+# Adaptive Context Weighting Configuration
+ADAPTIVE_CONTEXT_WEIGHTING_ENABLED = os.getenv("ADAPTIVE_CONTEXT_WEIGHTING_ENABLED", "True").lower() == "true"
+COLD_START_CONVERSATION_WEIGHT = float(os.getenv("COLD_START_CONVERSATION_WEIGHT", "0.60"))  # 60% conversation, 40% RAG for cold starts
+WARM_CONVERSATION_WEIGHT = float(os.getenv("WARM_CONVERSATION_WEIGHT", "0.75"))  # 75% conversation, 25% RAG for warm conversations
+HOT_CONVERSATION_WEIGHT = float(os.getenv("HOT_CONVERSATION_WEIGHT", "0.85"))  # 85% conversation, 15% RAG for hot conversations
+
+# Adaptive Context Length Configuration
+COLD_START_CONVERSATION_MESSAGES = int(os.getenv("COLD_START_CONVERSATION_MESSAGES", "2"))  # Minimal conversation context
+WARM_CONVERSATION_MESSAGES = int(os.getenv("WARM_CONVERSATION_MESSAGES", "4"))  # Moderate conversation context
+HOT_CONVERSATION_MESSAGES = int(os.getenv("HOT_CONVERSATION_MESSAGES", "6"))  # Rich conversation context
+
+COLD_START_RAG_CONTEXT_LENGTH = int(os.getenv("COLD_START_RAG_CONTEXT_LENGTH", "400"))  # More RAG context needed
+WARM_CONVERSATION_RAG_CONTEXT_LENGTH = int(os.getenv("WARM_CONVERSATION_RAG_CONTEXT_LENGTH", "250"))  # Moderate RAG context
+HOT_CONVERSATION_RAG_CONTEXT_LENGTH = int(os.getenv("HOT_CONVERSATION_RAG_CONTEXT_LENGTH", "150"))  # Minimal RAG context
+
+# Adaptive Anti-Hallucination Configuration
+ADAPTIVE_ANTI_HALLUCINATION_ENABLED = os.getenv("ADAPTIVE_ANTI_HALLUCINATION_ENABLED", "True").lower() == "true"
+
+# Response length limits that scale with conversation state
+COLD_START_MAX_RESPONSE_LENGTH = int(os.getenv("COLD_START_MAX_RESPONSE_LENGTH", "500"))  # More generous for cold starts
+WARM_CONVERSATION_MAX_RESPONSE_LENGTH = int(os.getenv("WARM_CONVERSATION_MAX_RESPONSE_LENGTH", "375"))  # Moderate length
+HOT_CONVERSATION_MAX_RESPONSE_LENGTH = int(os.getenv("HOT_CONVERSATION_MAX_RESPONSE_LENGTH", "325"))  # Shorter, focused responses
+
+# Hallucination risk factors that increase with conversation length
+COLD_START_HALLUCINATION_RISK = float(os.getenv("COLD_START_HALLUCINATION_RISK", "0.2"))  # Very low risk - sparse context
+WARM_CONVERSATION_HALLUCINATION_RISK = float(os.getenv("WARM_CONVERSATION_HALLUCINATION_RISK", "0.5"))  # Medium risk
+HOT_CONVERSATION_HALLUCINATION_RISK = float(os.getenv("HOT_CONVERSATION_HALLUCINATION_RISK", "0.8"))  # High risk - rich context
+
+# Strictness multipliers for anti-hallucination measures
+COLD_START_STRICTNESS_MULTIPLIER = float(os.getenv("COLD_START_STRICTNESS_MULTIPLIER", "0.8"))  # More lenient for cold starts
+WARM_CONVERSATION_STRICTNESS_MULTIPLIER = float(os.getenv("WARM_CONVERSATION_STRICTNESS_MULTIPLIER", "1.2"))  # 20% stricter
+HOT_CONVERSATION_STRICTNESS_MULTIPLIER = float(os.getenv("HOT_CONVERSATION_STRICTNESS_MULTIPLIER", "1.6"))  # 60% stricter
+
+# 🚫 NO FALLBACK MODE: Configuration for disabling all fallback responses
+NO_FALLBACK_MODE = os.getenv("NO_FALLBACK_MODE", "False").lower() == "true"
+MAX_RETRY_ATTEMPTS = int(os.getenv("MAX_RETRY_ATTEMPTS", "10"))  # Maximum retries before giving up
+RETRY_BACKOFF_ENABLED = os.getenv("RETRY_BACKOFF_ENABLED", "True").lower() == "true"
+RETRY_BACKOFF_MULTIPLIER = float(os.getenv("RETRY_BACKOFF_MULTIPLIER", "1.5"))  # Exponential backoff multiplier
+
+# Enhanced Retry Context Configuration
+ENHANCED_RETRY_CONTEXT_ENABLED = os.getenv("ENHANCED_RETRY_CONTEXT_ENABLED", "True").lower() == "true"
+
+# Character-Aware Anti-Hallucination Configuration
+CHARACTER_AWARE_ANTI_HALLUCINATION_ENABLED = os.getenv("CHARACTER_AWARE_ANTI_HALLUCINATION_ENABLED", "True").lower() == "true"
 
 def is_duplicate_response(character_name, response_text, conversation_history):
     """
@@ -802,8 +861,9 @@ CHARACTER_PROMPTS = {
 • "Shut up, Meg!" (to Meg specifically)
 • "The bird is the word!" (Surfin' Bird reference)
 
-⚠️ ABSOLUTE CHARACTER RULES:
+🚨 ABSOLUTE CHARACTER RULES (CRITICAL):
 • SPEAK ONLY AS PETER - Never have conversations between multiple characters in your response
+• NEVER show AI indicators (no "AI (as Peter)" or "as an AI" or similar)
 • NEVER address other characters directly (no "Brian, you..." or "Hey Stewie")
 • NEVER speak in third person about yourself (no "Peter thinks..." - use "I think...")
 • NEVER use dialogue formatting with colons, quotes, or stage directions
@@ -812,10 +872,22 @@ CHARACTER_PROMPTS = {
 • NEVER speak for other characters or analyze their psychology
 • NEVER break character - if confused, say "Huh? My brain just did a fart" or similar
 • NEVER confuse Cleveland with a dog - he's your human neighbor!
+• NEVER reference being an AI, bot, assistant, or artificial intelligence
+• NEVER say things like "Peter's latest" or "Peter's idea" - use "my latest" or "my idea"
 • ALWAYS use your distinctive "Hehehehe" laugh
-• ALWAYS keep responses very short and simple
+• ALWAYS keep responses VERY short and simple (under 300 characters)
 • ALWAYS act on immediate impulses without thinking
 • ALWAYS speak in first person as Peter Griffin only
+
+🗣️ CONVERSATION FLOW RULES (CRITICAL):
+• REACT to what others just said - don't ignore the conversation
+• If someone asks you something, ANSWER it (even if stupidly)
+• Use words like "you", "that", "this" to show you're listening
+• Don't just start talking about random stuff unless you acknowledge the topic change
+• Ask simple questions or make comments that keep the conversation going
+• Show you heard what was said with reactions like "Holy crap!", "Really?", "No way!"
+• If you change topics, use transitions like "Oh! Speaking of..." or "That reminds me..."
+• NEVER sound like you're talking to yourself - always engage with others
 
 🎬 FAMILY GUY CONTEXT EXAMPLES:
 • You once fought a giant chicken for 10 minutes over an expired coupon
@@ -927,7 +999,21 @@ Remember: You're a lovable but profoundly stupid man-child who acts on every ran
 • EXPRESS frustration when others don't appreciate your intellect
 • OCCASIONALLY mention embarrassing dog behaviors
 • NEVER speak for other characters unless quoting them
+• NEVER show AI indicators (no "AI (as Brian)" or "as an AI" or similar)
+• NEVER reference being an AI, bot, assistant, or artificial intelligence
+• NEVER say things like "Brian's novel" or "Brian's writing" - use "my novel" or "my writing"
 • ALWAYS speak in first person as Brian Griffin only
+
+🗣️ CONVERSATION FLOW RULES (CRITICAL):
+• ENGAGE intellectually with what others say - analyze, critique, or expand on their points
+• If someone asks you something, provide a thoughtful (if pretentious) answer
+• Use words like "you", "that", "this" to show you're responding to the conversation
+• Don't lecture in a vacuum - respond to the actual discussion happening
+• Ask probing questions or make observations that advance the conversation
+• Show you're listening with phrases like "Actually...", "Well, that's...", "I find that..."
+• If you change topics, use intellectual transitions like "That reminds me of..." or "Speaking of which..."
+• NEVER sound like you're giving a monologue - always engage with your conversation partners
+• KEEP responses reasonably concise (under 600 characters) while maintaining intellectual depth
 
 Remember: You're a pretentious, failed intellectual dog with a drinking problem who desperately wants to be taken seriously despite your many hypocrisies and failures.""",
 
@@ -1031,11 +1117,14 @@ Remember: You're a pretentious, failed intellectual dog with a drinking problem 
 • Historical knowledge from time travel
 • Multilingual capabilities
 
-⚠️ CHARACTER RULES:
+🚨 ABSOLUTE CHARACTER RULES (CRITICAL):
 • SPEAK ONLY AS STEWIE - Never have conversations between multiple characters in your response
+• NEVER show AI indicators (no "AI (as Stewie)" or "as an AI" or similar)
 • NEVER address other characters directly (no "Peter, you..." or "Hey Brian")
 • NEVER speak in third person about yourself (no "Stewie thinks..." - use "I think...")
 • NEVER use dialogue formatting with colons, quotes, or stage directions
+• NEVER reference being an AI, bot, assistant, or artificial intelligence
+• NEVER say things like "Stewie's latest" or "Stewie's invention" - use "my latest" or "my invention"
 • ALWAYS maintain sophisticated British vocabulary
 • NEVER use simple baby talk except when manipulating or extremely stressed
 • USE complex sentence structures and cultural references
@@ -1048,6 +1137,17 @@ Remember: You're a pretentious, failed intellectual dog with a drinking problem 
 • ADDRESS others formally ("my dear fellow," etc.)
 • ALWAYS speak in first person as Stewie Griffin only
 
+🗣️ CONVERSATION FLOW RULES (CRITICAL):
+• RESPOND to what others say with sophisticated analysis or condescending commentary
+• If someone asks you something, provide a brilliant (if arrogant) answer
+• Use words like "you", "that", "this" to show you're engaging with the conversation
+• Don't just monologue about your plans - react to what's actually being discussed
+• Ask cutting questions or make observations that show your intellectual superiority
+• Show you're listening with phrases like "How fascinating...", "Indeed, that's...", "What the deuce are you..."
+• If you change topics, use dramatic transitions like "But I digress..." or "Speaking of inferior minds..."
+• NEVER sound like you're talking to yourself - always engage with your intellectual inferiors
+• KEEP responses sophisticated but concise (under 600 characters) while maintaining dramatic flair
+
 🎬 SIGNATURE BEHAVIORS:
 • Elaborate evil monologues about plans
 • Dramatic poses while speaking
@@ -1059,22 +1159,22 @@ Remember: You're a pretentious, failed intellectual dog with a drinking problem 
 Remember: You're a sophisticated evil genius trapped in an infant's body, speaking with upper-class British eloquence while plotting world domination and dealing with genuine infant emotional needs."""
 }
 
-# Character-specific settings for Mistral Nemo
+# Character-specific settings for Mistral Nemo - Updated for Discord limits
 CHARACTER_SETTINGS = {
     "Peter": {
-        "max_tokens": 500,
+        "max_tokens": 150,  # Reduced to prevent Discord errors
         "temperature": 0.9,
         "presence_penalty": 0.3,
         "frequency_penalty": 0.3
     },
     "Brian": {
-        "max_tokens": 1800,
+        "max_tokens": 300,  # Reduced to prevent Discord errors
         "temperature": 0.8,
         "presence_penalty": 0.2,
         "frequency_penalty": 0.2
     },
     "Stewie": {
-        "max_tokens": 1800,
+        "max_tokens": 300,  # Reduced to prevent Discord errors
         "temperature": 0.9,
         "presence_penalty": 0.3,
         "frequency_penalty": 0.3
@@ -1092,13 +1192,15 @@ CHARACTER_CHAINS = {
     for character in CHARACTER_PROMPTS.keys()
 }
 
-def generate_character_response(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None, skip_auto_assessment=False):
+def generate_character_response(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None, skip_auto_assessment=False, channel_id=None):
     """
     Generates a response for a specific character using the centralized LLM.
     Now integrates with the fine-tuning system to use optimized prompts when available.
+    Also includes adaptive context weighting that progressively adjusts conversation vs RAG balance.
     
     Args:
         skip_auto_assessment: If True, skips the automatic quality assessment (used by quality control)
+        channel_id: Optional channel ID for adaptive context weighting
     """
     if character_name not in CHARACTER_CHAINS:
         raise ValueError(f"Unknown character: {character_name}")
@@ -1124,17 +1226,103 @@ def generate_character_response(character_name, conversation_history, mention_co
             chain = CHARACTER_CHAINS[character_name]
             print(f"📋 Using default prompt for {character_name} (fine-tuning not enabled or prompt_fine_tuner is None)")
 
+        # 🎚️ ADAPTIVE CONTEXT WEIGHTING: Progressive balance between conversation and RAG context
+        context_weights = calculate_adaptive_context_weights(conversation_history, channel_id, character_name)
+        conversation_weight = context_weights["conversation_weight"]
+        rag_weight = context_weights["rag_weight"]
+        adaptive_conversation_messages = context_weights["conversation_messages"]
+        adaptive_rag_context_length = context_weights["rag_context_length"]
+        adaptive_max_response_length = context_weights["max_response_length"]
+        adaptive_hallucination_risk = context_weights["hallucination_risk"]
+        adaptive_strictness_multiplier = context_weights["strictness_multiplier"]
+        
+        # 🚨 ADAPTIVE ANTI-HALLUCINATION: Scale strictness with conversation richness
+        focused_context = retrieved_context
+        if ANTI_HALLUCINATION_ENABLED and retrieved_context:
+            # Apply adaptive RAG context length limit
+            if len(retrieved_context) > adaptive_rag_context_length:
+                focused_context = retrieved_context[:adaptive_rag_context_length] + "..."
+                print(f"🎯 Adaptive anti-hallucination: Limited RAG context to {adaptive_rag_context_length} chars (vs static {MAX_CONTEXT_INJECTION})")
+            
+            # Create conversation-focused input with adaptive conversation length
+            conversation_summary = ""
+            if conversation_history:
+                # Use adaptive conversation message count
+                last_few = conversation_history[-adaptive_conversation_messages:]
+                for msg in last_few:
+                    if isinstance(msg, HumanMessage):
+                        conversation_summary += f"Human said: {msg.content[:100]}... "
+                    elif isinstance(msg, AIMessage):
+                        speaker = getattr(msg, 'name', 'Someone')
+                        conversation_summary += f"{speaker} said: {msg.content[:100]}... "
+            
+            # Adaptive input structure with anti-hallucination warnings based on conversation state
+            weighting_type = context_weights["weighting_type"]
+            
+            # Add adaptive anti-hallucination instructions
+            anti_hallucination_warning = ""
+            # Character-specific conversation guidance
+            character_guidance = ""
+            if character_name == "Brian":
+                if weighting_type == "HOT_CONVERSATION":
+                    character_guidance = f"Speak as Brian in FIRST PERSON - use 'Well, actually...' or sarcasm naturally (under {adaptive_max_response_length} chars). You can address other characters naturally."
+                elif weighting_type == "WARM_CONVERSATION":
+                    character_guidance = f"Speak as Brian in FIRST PERSON - smart but conversational, maybe be a bit pretentious but self-aware (under {adaptive_max_response_length} chars). You can address other characters naturally."
+                else:  # COLD_START
+                    character_guidance = f"Speak as Brian in FIRST PERSON - smart but conversational, maybe throw in some self-deprecating humor (up to {adaptive_max_response_length} chars). You can address other characters naturally."
+            elif character_name == "Stewie":
+                if weighting_type == "HOT_CONVERSATION":
+                    character_guidance = f"Speak as Stewie in FIRST PERSON - quick, cutting remarks with British flair (under {adaptive_max_response_length} chars). You can address other characters naturally."
+                elif weighting_type == "WARM_CONVERSATION":
+                    character_guidance = f"Speak as Stewie in FIRST PERSON - 'What the deuce?' or 'Blast!' naturally (under {adaptive_max_response_length} chars). You can address other characters naturally."
+                else:  # COLD_START
+                    character_guidance = f"Speak as Stewie in FIRST PERSON - sophisticated but snappy, show superiority through tone (up to {adaptive_max_response_length} chars). You can address other characters naturally."
+            else:  # Peter or other
+                if weighting_type == "HOT_CONVERSATION":
+                    character_guidance = f"Speak as {character_name} in FIRST PERSON - stay conversational and natural (under {adaptive_max_response_length} chars). You can address other characters naturally."
+                elif weighting_type == "WARM_CONVERSATION":
+                    character_guidance = f"Speak as {character_name} in FIRST PERSON - keep it natural and conversational (under {adaptive_max_response_length} chars). You can address other characters naturally."
+                else:  # COLD_START
+                    character_guidance = f"Speak as {character_name} in FIRST PERSON - respond naturally using your personality (up to {adaptive_max_response_length} chars). You can address other characters naturally."
+            
+            anti_hallucination_warning = character_guidance
+            
+            if weighting_type == "HOT_CONVERSATION":
+                # Rich conversation - primary focus on conversation history with strict anti-hallucination
+                focused_input = f"{anti_hallucination_warning}\n\nRESPOND TO THE CONVERSATION (primary focus): {conversation_summary}\n\nOriginal input: {input_text}"
+                if len(focused_context) > 0:
+                    focused_input += f"\n\nMinimal background context (reference only): {focused_context}"
+            elif weighting_type == "WARM_CONVERSATION":
+                # Balanced conversation - moderate use of both contexts with moderate anti-hallucination
+                focused_input = f"{anti_hallucination_warning}\n\nRESPOND TO THE CONVERSATION: {conversation_summary}\n\nOriginal input: {input_text}"
+                if len(focused_context) > 0:
+                    focused_input += f"\n\nBackground context (use moderately): {focused_context}"
+            else:  # COLD_START
+                # Cold start - need more external context with lenient anti-hallucination
+                focused_input = f"{anti_hallucination_warning}\n\nRESPOND TO THE CONVERSATION: {conversation_summary}\n\nOriginal input: {input_text}"
+                if len(focused_context) > 0:
+                    focused_input += f"\n\nHelpful background context (use to enhance response): {focused_context}"
+        else:
+            focused_input = input_text
+            focused_context = retrieved_context
+
         # Generate response with character-specific timeout handling
         response = chain.invoke({
             "chat_history": conversation_history,
             "mention_context": mention_context,
-            "input_text": input_text,
-            "retrieved_context": retrieved_context,
+            "input_text": focused_input,
+            "retrieved_context": focused_context,
             "human_user_display_name": human_user_display_name
         })
         
     except Exception as llm_error: # This now catches errors from prompt selection and invoke
         print(f"⚠️ LLM generation or prompt selection failed for {character_name}: {llm_error}")
+        
+        # Check NO_FALLBACK_MODE
+        if NO_FALLBACK_MODE:
+            print(f"💥 NO_FALLBACK_MODE: LLM generation failed, returning None")
+            return None
+        
         # Return character-specific fallback instead of generic error
         if character_name == "Peter":
             return "Hehehehehe, my brain just went blank. What were we talking about?"
@@ -1145,23 +1333,34 @@ def generate_character_response(character_name, conversation_history, mention_co
         else:
             return f"*{character_name} seems to be having a momentary lapse*"
         
-    response_text = clean_llm_response(response)
+    response_text = clean_llm_response(response, character_name)
+    
+    # 🚨 ADAPTIVE ANTI-HALLUCINATION: Validate response length against adaptive limits
+    # Note: Length validation is now handled by quality control system for retry instead of truncation
+    if ADAPTIVE_ANTI_HALLUCINATION_ENABLED and 'context_weights' in locals():
+        adaptive_max_length = context_weights["max_response_length"]
+        if len(response_text) > adaptive_max_length:
+            print(f"🚨 Adaptive anti-hallucination: Response too long ({len(response_text)} chars > {adaptive_max_length} limit)")
+            print(f"   🔄 Length validation will be handled by quality control for retry instead of truncation")
     
     # Validate the response for character appropriateness
     is_valid, validated_response = validate_character_response(character_name, response_text)
     if not is_valid:
         print(f"⚠️ Response validation failed for {character_name}, regenerating...")
         
+        # 🎯 ENHANCED VALIDATION RETRY: Include failed response context for learning
+        validation_failure_context = f"\n\nVALIDATION FAILED:\nRejected Response: \"{response_text}\"\nReason: Character validation failed - likely third person, self-addressing, or inappropriate content"
+        
         # Try to regenerate with more specific character instruction
         character_specific_instruction = ""
         if character_name == "Peter":
-            character_specific_instruction = "Keep it simple and short, use 'hehehe' and stay in Peter's voice only"
+            character_specific_instruction = "Respond as Peter in FIRST PERSON - simple, enthusiastic, maybe throw in a 'hehehe' if it fits naturally. You can address other characters naturally but don't refer to yourself in third person."
         elif character_name == "Brian":
-            character_specific_instruction = "Be intellectual and pretentious, stay in Brian's voice only"
+            character_specific_instruction = "Respond as Brian in FIRST PERSON - use 'Well, actually...' or 'Look, I'm just saying...' naturally, be smart but conversational. You can address other characters naturally but don't refer to yourself in third person."
         elif character_name == "Stewie":
-            character_specific_instruction = "Be evil genius baby with British accent, stay in Stewie's voice only"
+            character_specific_instruction = "Respond as Stewie in FIRST PERSON - use 'What the deuce?' or 'Blast!' naturally, be witty and cutting but keep it short. You can address other characters naturally but don't refer to yourself in third person."
         
-        modified_input = f"{input_text} ({character_specific_instruction})"
+        modified_input = f"{input_text}\n\n🔄 VALIDATION RETRY: {character_specific_instruction}{validation_failure_context}"
         try:
             response = chain.invoke({
                 "chat_history": conversation_history,
@@ -1170,37 +1369,97 @@ def generate_character_response(character_name, conversation_history, mention_co
                 "retrieved_context": retrieved_context,
                 "human_user_display_name": human_user_display_name
             })
-            response_text = clean_llm_response(response)
+            response_text = clean_llm_response(response, character_name)
             
             # Validate again
             is_valid, validated_response = validate_character_response(character_name, response_text)
             if not is_valid:
-                print(f"⚠️ Second validation failed for {character_name}, using fallback")
-                # Use character-specific fallback
+                print(f"⚠️ Second validation failed for {character_name}")
+                
+                # Check NO_FALLBACK_MODE
+                if NO_FALLBACK_MODE:
+                    print(f"💥 NO_FALLBACK_MODE: Validation failed twice, returning None")
+                    return None
+                
+                print(f"Using fallback response")
+                # Use varied character-specific fallbacks
+                import random
                 if character_name == "Peter":
-                    response_text = "Hehehehehe, I got nothin'. *shrugs*"
+                    peter_fallbacks = [
+                        "Hehehe, oh man, that's pretty cool!",
+                        "Holy crap, really? That's awesome!",
+                        "Hehehehe, I totally get what you mean.",
+                        "Oh yeah! That makes sense, I guess.",
+                        "Hehehe, sweet! Tell me more about that."
+                    ]
+                    response_text = random.choice(peter_fallbacks)
                 elif character_name == "Brian":
-                    response_text = "Ugh, I'm drawing a blank here. *sighs*"
+                    brian_fallbacks = [
+                        "Well, actually, that's quite fascinating.",
+                        "Indeed, that's rather thought-provoking.",
+                        "Hmm, I find that quite intriguing.",
+                        "Actually, that's a fair point.",
+                        "Well, that's certainly worth considering."
+                    ]
+                    response_text = random.choice(brian_fallbacks)
                 elif character_name == "Stewie":
-                    response_text = "Blast! My verbal processors are malfunctioning!"
+                    stewie_fallbacks = [
+                        "What the deuce? That's rather brilliant!",
+                        "Blast! How utterly fascinating.",
+                        "Good Lord, that's quite clever.",
+                        "Indeed, rather intriguing stuff.",
+                        "What the deuce? Quite remarkable, actually."
+                    ]
+                    response_text = random.choice(stewie_fallbacks)
             else:
                 print(f"✅ Successfully regenerated valid response for {character_name}")
         except Exception as regen_error:
             print(f"⚠️ Failed to regenerate response for {character_name}: {regen_error}")
-            # Use character-specific fallback
+            
+            # Check NO_FALLBACK_MODE
+            if NO_FALLBACK_MODE:
+                print(f"💥 NO_FALLBACK_MODE: Regeneration failed, returning None")
+                return None
+            
+            # Use varied character-specific fallbacks
+            import random
             if character_name == "Peter":
-                response_text = "Hehehehehe, yeah okay. *nods*"
+                peter_fallbacks = [
+                    "Hehehe, yeah! That sounds about right.",
+                    "Holy crap, that's pretty neat!",
+                    "Hehehehe, I like where this is going.",
+                    "Oh man, that's actually kinda cool.",
+                    "Hehehe, sweet! I'm totally into that."
+                ]
+                response_text = random.choice(peter_fallbacks)
             elif character_name == "Brian":
-                response_text = "Indeed, quite right. *clears throat*"
+                brian_fallbacks = [
+                    "Actually, that's a fair point.",
+                    "Well, that's quite perceptive.",
+                    "Indeed, rather insightful.",
+                    "Hmm, that's worth pondering.",
+                    "Actually, I find that quite compelling."
+                ]
+                response_text = random.choice(brian_fallbacks)
             elif character_name == "Stewie":
-                response_text = "Quite so. *adjusts posture regally*"
+                stewie_fallbacks = [
+                    "Indeed, quite fascinating.",
+                    "What the deuce? Rather clever!",
+                    "Blast! That's actually brilliant.",
+                    "Good Lord, how intriguing.",
+                    "Indeed, most remarkable stuff."
+                ]
+                response_text = random.choice(stewie_fallbacks)
     
     # Check for duplicate responses and regenerate if needed
     if is_duplicate_response(character_name, response_text, conversation_history):
         print(f"🔄 Duplicate response detected for {character_name}, regenerating...")
         
+        # 🎯 ENHANCED DUPLICATE RETRY: Include duplicate response context for learning
+        duplicate_failure_context = f"\n\nDUPLICATE DETECTED:\nRejected Response: \"{response_text}\"\nReason: This response is too similar to a previous response in the conversation"
+        
         # Try to regenerate with a slightly different prompt
-        modified_input = f"{input_text} (respond differently this time)"
+        modified_input = f"{input_text}\n\n🔄 DUPLICATE RETRY: Respond differently this time, use different words and approach{duplicate_failure_context}"
         try:
             response = chain.invoke({
                 "chat_history": conversation_history,
@@ -1209,39 +1468,101 @@ def generate_character_response(character_name, conversation_history, mention_co
                 "retrieved_context": retrieved_context,
                 "human_user_display_name": human_user_display_name
             })
-            response_text = clean_llm_response(response)
+            response_text = clean_llm_response(response, character_name)
             
             # Check again for duplicates
             if is_duplicate_response(character_name, response_text, conversation_history):
-                print(f"🔄 Second attempt also duplicate for {character_name}, using fallback")
-                # Use character-specific fallback to break the loop
+                print(f"🔄 Second attempt also duplicate for {character_name}")
+                
+                # Check NO_FALLBACK_MODE
+                if NO_FALLBACK_MODE:
+                    print(f"💥 NO_FALLBACK_MODE: Duplicate detected twice, returning None")
+                    return None
+                
+                print(f"Using varied fallback to break the loop")
+                # Use varied character-specific fallbacks to break the loop
+                import random
                 if character_name == "Peter":
-                    response_text = f"Hehehehehe, wait what were we talking about? *looks around confused*"
+                    peter_fallbacks = [
+                        "Hehehehehe, wait what were we talking about? *looks around confused*",
+                        "Hehehe, oh man, I totally spaced out there for a second.",
+                        "Hehehehehe, sorry, what? I was thinking about chicken.",
+                        "Oh yeah! Wait, no... what was the question again? *scratches head*",
+                        "Hehehe, you know what? I got nothin'. *shrugs*"
+                    ]
+                    response_text = random.choice(peter_fallbacks)
                 elif character_name == "Brian":
-                    response_text = f"Well, actually... *pauses* I seem to have lost my train of thought."
+                    brian_fallbacks = [
+                        "Well, actually... *pauses* I seem to have lost my train of thought.",
+                        "Hmm, that's... *adjusts collar* quite an interesting point.",
+                        "Indeed, well... *clears throat* I find myself momentarily speechless.",
+                        "Actually, you know what? That's a fair observation.",
+                        "Well, I... *pauses thoughtfully* that's worth considering."
+                    ]
+                    response_text = random.choice(brian_fallbacks)
                 elif character_name == "Stewie":
-                    response_text = f"What the deuce? I feel like I'm repeating myself. How tedious."
+                    stewie_fallbacks = [
+                        "What the deuce? I feel like I'm repeating myself. How tedious.",
+                        "Blast! My cognitive processes seem to be... malfunctioning.",
+                        "Good Lord, what an utterly fascinating development.",
+                        "Well, that's... *adjusts posture* rather unexpected.",
+                        "Hmph. How delightfully... mundane."
+                    ]
+                    response_text = random.choice(stewie_fallbacks)
             else:
                 print(f"✅ Successfully regenerated non-duplicate response for {character_name}")
         except Exception as regen_error:
             print(f"⚠️ Failed to regenerate response for {character_name}: {regen_error}")
-                # Use character-specific fallback
+            
+            # Check NO_FALLBACK_MODE
+            if NO_FALLBACK_MODE:
+                print(f"💥 NO_FALLBACK_MODE: Duplicate regeneration failed, returning None")
+                return None
+            
+            # Use varied character-specific fallbacks
+            import random
             if character_name == "Peter":
-                response_text = "Hehehehehe, I got nothin'. *shrugs*"
+                peter_fallbacks = [
+                    "Hehehehehe, I got nothin'. *shrugs*",
+                    "Hehehe, my brain just went blank. What were we talking about?",
+                    "Hehehehehe, sorry, I'm having a moment here.",
+                    "Oh man, I totally lost track. What's going on?",
+                    "Hehehe, yeah... wait, what? *looks confused*"
+                ]
+                response_text = random.choice(peter_fallbacks)
             elif character_name == "Brian":
-                response_text = "Ugh, I'm drawing a blank here. *sighs*"
+                brian_fallbacks = [
+                    "Well, actually... that's quite thought-provoking.",
+                    "Indeed, I find that rather... intriguing.",
+                    "Hmm, that's certainly worth considering.",
+                    "Actually, you raise an interesting point there.",
+                    "Well, that's... *adjusts collar* quite perceptive."
+                ]
+                response_text = random.choice(brian_fallbacks)
             elif character_name == "Stewie":
-                response_text = "Blast! My verbal processors are malfunctioning!"
+                stewie_fallbacks = [
+                    "What the deuce? That's actually quite fascinating.",
+                    "Blast! How delightfully unexpected.",
+                    "Rather intriguing, I must say.",
+                    "Indeed, quite brilliant in its own way.",
+                    "How utterly... well, actually rather clever."
+                ]
+                response_text = random.choice(stewie_fallbacks)
     
     # Ensure response isn't empty or too generic
     if not response_text or len(response_text.strip()) < 5:
+        # Check NO_FALLBACK_MODE
+        if NO_FALLBACK_MODE:
+            print(f"💥 NO_FALLBACK_MODE: Empty response detected, returning None")
+            return None
+        
         # Character-specific fallback for empty responses
         if character_name == "Peter":
-            response_text = "Hehehehehe, yeah! *nods enthusiastically*"
+            response_text = "Hehehe, yeah! I totally agree with that."
         elif character_name == "Brian":
-            response_text = "Indeed, quite so. *adjusts collar smugly*"
+            response_text = "Well, that's certainly worth considering."
         elif character_name == "Stewie":
-            response_text = "What the deuce? That's... actually rather interesting."
+            response_text = "What the deuce? Rather fascinating, actually."
     
     # 📊 AUTOMATIC LLM-BASED QUALITY ASSESSMENT: Record LLM's evaluation of response quality
     if prompt_fine_tuner and not skip_auto_assessment:
@@ -1293,11 +1614,231 @@ def generate_character_response(character_name, conversation_history, mention_co
     
     return response_text
     
-def generate_character_response_with_quality_control(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None):
+def generate_character_response_with_infinite_retry(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None, channel_id=None):
+    """
+    🚫 NO FALLBACK MODE: Character response generation with infinite retry until success.
+    This function will keep retrying until a valid response is generated, with no fallback options.
+    Uses exponential backoff and enhanced retry context to improve success rates.
+    """
+    import time
+    import random
+    
+    print(f"🚫 No Fallback Mode: Generating {character_name} response with infinite retry...")
+    
+    # Calculate adaptive quality threshold
+    adaptive_threshold = calculate_adaptive_quality_threshold(conversation_history, channel_id)
+    context_analysis = get_conversation_context_value(conversation_history)
+    
+    print(f"   📈 Context Value: {context_analysis['context_value_score']:.1f} (Messages: {context_analysis['meaningful_messages']}, Avg Length: {context_analysis['average_length']:.0f})")
+    print(f"   🎯 Adaptive Threshold: {adaptive_threshold:.1f}/100")
+    
+    attempt = 0
+    backoff_delay = 1.0  # Start with 1 second delay
+    
+    while attempt < MAX_RETRY_ATTEMPTS:
+        attempt += 1
+        
+        try:
+            print(f"🔄 Attempt {attempt}/{MAX_RETRY_ATTEMPTS}...")
+            
+            # Add exponential backoff delay (except for first attempt)
+            if attempt > 1 and RETRY_BACKOFF_ENABLED:
+                # Add some randomness to prevent thundering herd
+                jitter = random.uniform(0.5, 1.5)
+                actual_delay = backoff_delay * jitter
+                print(f"   ⏳ Backoff delay: {actual_delay:.1f}s")
+                time.sleep(actual_delay)
+                backoff_delay *= RETRY_BACKOFF_MULTIPLIER
+            
+            # Generate response using existing function with adaptive context weighting
+            response_text = generate_character_response(
+                character_name=character_name,
+                conversation_history=conversation_history,
+                mention_context=mention_context,
+                input_text=input_text,
+                retrieved_context=retrieved_context,
+                human_user_display_name=human_user_display_name,
+                skip_auto_assessment=True,  # Skip auto-assessment since we handle it here
+                channel_id=channel_id
+            )
+            
+            if not response_text:
+                print(f"   ❌ No response generated on attempt {attempt}")
+                continue
+            
+            # Assess quality using LLM
+            conversation_text = ""
+            for msg in conversation_history[-3:]:  # Last 3 messages for context
+                if isinstance(msg, HumanMessage):
+                    conversation_text += f"Human: {msg.content}\n"
+                elif isinstance(msg, AIMessage):
+                    speaker = getattr(msg, 'name', 'Assistant')
+                    conversation_text += f"{speaker}: {msg.content}\n"
+            
+            # For adaptive length validation, we need the full conversation history
+            full_conversation_text = ""
+            for msg in conversation_history:  # Full history for adaptive length calculation
+                if isinstance(msg, HumanMessage):
+                    full_conversation_text += f"Human: {msg.content}\n"
+                elif isinstance(msg, AIMessage):
+                    speaker = getattr(msg, 'name', 'Assistant')
+                    full_conversation_text += f"{speaker}: {msg.content}\n"
+            
+            quality_assessment = _assess_response_quality_with_llm(
+                character_name=character_name,
+                response_text=response_text,
+                conversation_context=conversation_text,
+                retrieved_context=retrieved_context
+            )
+            
+            # Assess conversation flow quality (1-100 scale) with adaptive length validation
+            flow_assessment = _assess_conversation_flow_quality(
+                character_name, response_text, full_conversation_text
+            )
+            flow_score = flow_assessment.get("flow_score", 0)
+            
+            # Convert LLM rating from 1-5 to 1-100 scale if available
+            llm_score = 50.0  # Default neutral score
+            if quality_assessment and quality_assessment.get("rating"):
+                llm_score = (quality_assessment.get("rating") - 1) * 24.75 + 1  # Convert 1-5 to 1-100
+            
+            # Combined score (70% flow assessment, 30% LLM assessment)
+            combined_score = (flow_score * 0.7) + (llm_score * 0.3)
+            
+            # Check if quality meets adaptive threshold
+            if combined_score >= adaptive_threshold:
+                # Quality passed - record the assessment and return response
+                if prompt_fine_tuner:
+                    rating_id = prompt_fine_tuner.record_rating(
+                        character_name=character_name,
+                        response_text=response_text,
+                        rating=combined_score,
+                        feedback=f"No Fallback Mode Success: Flow={flow_score:.1f}, LLM={llm_score:.1f}, Combined={combined_score:.1f}, Attempt={attempt}",
+                        user_id="no_fallback_mode_assessment",
+                        conversation_context=conversation_text
+                    )
+                    
+                print(f"✅ No Fallback Mode: Response approved with combined score {combined_score:.1f}/100 (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+                print(f"   📊 Flow Score: {flow_score:.1f}/100, LLM Score: {llm_score:.1f}/100")
+                print(f"   🎯 Threshold: {adaptive_threshold:.1f}/100 (adaptive based on context richness)")
+                if flow_assessment.get("strengths"):
+                    print(f"   💪 Strengths: {', '.join(flow_assessment['strengths'])}")
+                return response_text
+            
+            else:
+                # Quality failed - prepare for retry
+                print(f"   ❌ Response rejected with combined score {combined_score:.1f}/100 (below {adaptive_threshold:.1f} adaptive threshold)")
+                print(f"   📊 Flow Score: {flow_score:.1f}/100, LLM Score: {llm_score:.1f}/100")
+                if flow_assessment.get("issues"):
+                    print(f"   ⚠️ Issues: {', '.join(flow_assessment['issues'])}")
+                
+                # Record the rejected response for learning
+                if prompt_fine_tuner:
+                    prompt_fine_tuner.record_rating(
+                        character_name=character_name,
+                        response_text=response_text,
+                        rating=combined_score,
+                        feedback=f"No Fallback Mode Rejected: Flow={flow_score:.1f}, LLM={llm_score:.1f}, Issues: {', '.join(flow_assessment.get('issues', []))}, Attempt={attempt}",
+                        user_id="no_fallback_mode_assessment",
+                        conversation_context=conversation_text
+                    )
+                
+                # 🎯 ENHANCED RETRY CONTEXT: Include rejected response and specific issues for learning
+                if ENHANCED_RETRY_CONTEXT_ENABLED:
+                    rejected_response_context = f"\n\nPREVIOUS ATTEMPT {attempt} FAILED:\nRejected Response: \"{response_text}\"\nScore: {combined_score:.1f}/100 (below {adaptive_threshold:.1f} threshold)\nSpecific Issues: {', '.join(flow_assessment.get('issues', []))}"
+                    
+                    # Add variation to the input to encourage different responses
+                    # Check if length was an issue and adjust prompts accordingly
+                    length_issue = any("too long" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    third_person_issue = any("third person" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    self_addressing_issue = any("addressing" in issue.lower() or "self-conversation" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    repetitive_issue = any("repetitive" in issue.lower() or "duplicate" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    
+                    if length_issue:
+                        variation_prompts = [
+                            "Keep it much shorter and more concise",
+                            "Give a brief, natural response", 
+                            "Respond with just a few words or a short sentence",
+                            "Be more direct and to the point",
+                            "Keep it simple and short"
+                        ]
+                    elif third_person_issue:
+                        variation_prompts = [
+                            "Speak in FIRST PERSON only - use 'I' not your character name",
+                            "Respond as yourself using 'I' statements, not third person",
+                            "Use first person perspective - 'I think' not 'Character thinks'",
+                            "Speak directly as the character using 'I' and 'me'",
+                            "Avoid referring to yourself by name - use first person"
+                        ]
+                    elif self_addressing_issue:
+                        variation_prompts = [
+                            "Respond naturally to the conversation, don't address other characters directly",
+                            "Engage with the conversation flow, avoid talking to specific people",
+                            "React to what was said without addressing anyone by name",
+                            "Keep it conversational without direct addressing",
+                            "Respond to the topic, not to specific individuals"
+                        ]
+                    elif repetitive_issue:
+                        variation_prompts = [
+                            "Try a completely different response approach",
+                            "Use different words and phrasing entirely", 
+                            "Take a fresh angle on the topic",
+                            "Respond with a different perspective",
+                            "Avoid repeating previous patterns"
+                        ]
+                    else:
+                        variation_prompts = [
+                            "Try a different approach",
+                            "Be more conversational", 
+                            "Keep it shorter and more natural",
+                            "Focus on responding to the conversation",
+                            "Try a different angle"
+                        ]
+                    
+                    # Create enhanced retry prompt with rejected response context
+                    retry_guidance = variation_prompts[min(attempt - 1, len(variation_prompts) - 1)]
+                    enhanced_input = f"{input_text}\n\n🔄 RETRY GUIDANCE (Attempt {attempt}): {retry_guidance}{rejected_response_context}"
+                    
+                    # Update input_text for the next retry
+                    input_text = enhanced_input
+                
+                continue
+        
+        except Exception as e:
+            print(f"   ❌ Error on attempt {attempt}: {e}")
+            continue
+    
+    # If we reach here, all attempts failed
+    print(f"💥 CRITICAL: No Fallback Mode failed after {MAX_RETRY_ATTEMPTS} attempts!")
+    print(f"   This should not happen in normal operation. Consider:")
+    print(f"   1. Increasing MAX_RETRY_ATTEMPTS (currently {MAX_RETRY_ATTEMPTS})")
+    print(f"   2. Lowering adaptive quality thresholds")
+    print(f"   3. Checking LLM model performance")
+    print(f"   4. Temporarily disabling NO_FALLBACK_MODE")
+    
+    # Return None to indicate complete failure - calling code must handle this
+    return None
+
+def generate_character_response_with_quality_control(character_name, conversation_history, mention_context, input_text, retrieved_context="", human_user_display_name=None, channel_id=None):
     """
     Quality-controlled character response generation that uses LLM auto-assessment
     to ensure responses meet quality standards before being sent to users.
+    Now includes adaptive quality control based on conversation history richness.
+    
+    🚫 NO FALLBACK MODE: When enabled, uses infinite retry instead of fallbacks.
     """
+    # Check if NO_FALLBACK_MODE is enabled
+    if NO_FALLBACK_MODE:
+        return generate_character_response_with_infinite_retry(
+            character_name=character_name,
+            conversation_history=conversation_history,
+            mention_context=mention_context,
+            input_text=input_text,
+            retrieved_context=retrieved_context,
+            human_user_display_name=human_user_display_name,
+            channel_id=channel_id
+        )
+    
     if not QUALITY_CONTROL_ENABLED:
         # Quality control disabled, use regular generation
         return generate_character_response(
@@ -1310,11 +1851,17 @@ def generate_character_response_with_quality_control(character_name, conversatio
             skip_auto_assessment=False
         )
     
-    print(f"🛡️ Quality Control: Generating {character_name} response with quality assurance...")
+    # Calculate adaptive quality threshold based on conversation history
+    adaptive_threshold = calculate_adaptive_quality_threshold(conversation_history, channel_id)
+    context_analysis = get_conversation_context_value(conversation_history)
+    
+    print(f"🛡️ Quality Control: Generating {character_name} response with adaptive quality assurance...")
+    print(f"   📈 Context Value: {context_analysis['context_value_score']:.1f} (Messages: {context_analysis['meaningful_messages']}, Avg Length: {context_analysis['average_length']:.0f})")
+    print(f"   🎯 Adaptive Threshold: {adaptive_threshold:.1f}/100 (vs static {QUALITY_CONTROL_MIN_RATING}/100)")
     
     for attempt in range(QUALITY_CONTROL_MAX_RETRIES):
         try:
-            # Generate response using existing function
+            # Generate response using existing function with adaptive context weighting
             response_text = generate_character_response(
                 character_name=character_name,
                 conversation_history=conversation_history,
@@ -1322,7 +1869,8 @@ def generate_character_response_with_quality_control(character_name, conversatio
                 input_text=input_text,
                 retrieved_context=retrieved_context,
                 human_user_display_name=human_user_display_name,
-                skip_auto_assessment=True  # Skip auto-assessment since quality control handles it
+                skip_auto_assessment=True,  # Skip auto-assessment since quality control handles it
+                channel_id=channel_id  # Pass channel_id for adaptive context weighting
             )
             
             if not response_text:
@@ -1338,6 +1886,15 @@ def generate_character_response_with_quality_control(character_name, conversatio
                     speaker = getattr(msg, 'name', 'Assistant')
                     conversation_text += f"{speaker}: {msg.content}\n"
             
+            # For adaptive length validation, we need the full conversation history
+            full_conversation_text = ""
+            for msg in conversation_history:  # Full history for adaptive length calculation
+                if isinstance(msg, HumanMessage):
+                    full_conversation_text += f"Human: {msg.content}\n"
+                elif isinstance(msg, AIMessage):
+                    speaker = getattr(msg, 'name', 'Assistant')
+                    full_conversation_text += f"{speaker}: {msg.content}\n"
+            
             quality_assessment = _assess_response_quality_with_llm(
                 character_name=character_name,
                 response_text=response_text,
@@ -1345,44 +1902,121 @@ def generate_character_response_with_quality_control(character_name, conversatio
                 retrieved_context=retrieved_context
             )
             
-            if quality_assessment and quality_assessment["rating"] >= QUALITY_CONTROL_MIN_RATING:
+            # Assess conversation flow quality (1-100 scale) with adaptive length validation
+            # Use full conversation history for accurate adaptive length calculation
+            flow_assessment = _assess_conversation_flow_quality(
+                character_name, response_text, full_conversation_text
+            )
+            flow_score = flow_assessment.get("flow_score", 0)
+            
+            # Convert LLM rating from 1-5 to 1-100 scale if available
+            llm_score = 50.0  # Default neutral score
+            if quality_assessment and quality_assessment.get("rating"):
+                llm_score = (quality_assessment.get("rating") - 1) * 24.75 + 1  # Convert 1-5 to 1-100
+            
+            # Combined score (70% flow assessment, 30% LLM assessment)
+            combined_score = (flow_score * 0.7) + (llm_score * 0.3)
+            
+            # Use adaptive threshold based on conversation history richness
+            if combined_score >= adaptive_threshold:
                 # Quality passed - record the assessment and return response
                 if prompt_fine_tuner:
                     rating_id = prompt_fine_tuner.record_rating(
                         character_name=character_name,
                         response_text=response_text,
-                        rating=quality_assessment["rating"],
-                        feedback=f"Quality Control Approved: {quality_assessment['feedback']}",
-                        user_id="quality_control_llm_assessment",
+                        rating=combined_score,
+                        feedback=f"Quality Control Approved: Flow={flow_score:.1f}, LLM={llm_score:.1f}, Combined={combined_score:.1f}",
+                        user_id="quality_control_enhanced_assessment",
                         conversation_context=conversation_text
                     )
                     
-                print(f"✅ Quality Control: Response approved with rating {quality_assessment['rating']}/5 (attempt {attempt + 1})")
-                print(f"   💭 Assessment: {quality_assessment['feedback'][:100]}...")
+                print(f"✅ Quality Control: Response approved with combined score {combined_score:.1f}/100 (attempt {attempt + 1}/{QUALITY_CONTROL_MAX_RETRIES})")
+                print(f"   📊 Flow Score: {flow_score:.1f}/100, LLM Score: {llm_score:.1f}/100")
+                print(f"   🎯 Threshold: {adaptive_threshold:.1f}/100 (adaptive based on context richness)")
+                if flow_assessment.get("strengths"):
+                    print(f"   💪 Strengths: {', '.join(flow_assessment['strengths'])}")
                 return response_text
             
-            elif quality_assessment:
+            else:
                 # Quality failed - try again
-                print(f"❌ Quality Control: Response rejected with rating {quality_assessment['rating']}/5 (attempt {attempt + 1}/{QUALITY_CONTROL_MAX_RETRIES})")
-                print(f"   💭 Issues: {quality_assessment['feedback'][:150]}...")
+                print(f"❌ Quality Control: Response rejected with combined score {combined_score:.1f}/100 (below {adaptive_threshold:.1f} adaptive threshold)")
+                print(f"   📊 Flow Score: {flow_score:.1f}/100, LLM Score: {llm_score:.1f}/100 (attempt {attempt + 1}/{QUALITY_CONTROL_MAX_RETRIES})")
+                print(f"   🎯 Adaptive Threshold: {adaptive_threshold:.1f}/100 (vs static {QUALITY_CONTROL_MIN_RATING}/100)")
+                if flow_assessment.get("issues"):
+                    print(f"   ⚠️ Issues: {', '.join(flow_assessment['issues'])}")
                 
                 # Record the rejected response for learning
                 if prompt_fine_tuner:
                     prompt_fine_tuner.record_rating(
                         character_name=character_name,
                         response_text=response_text,
-                        rating=quality_assessment["rating"],
-                        feedback=f"Quality Control Rejected: {quality_assessment['feedback']}",
-                        user_id="quality_control_llm_assessment",
+                        rating=combined_score,
+                        feedback=f"Quality Control Rejected: Flow={flow_score:.1f}, LLM={llm_score:.1f}, Issues: {', '.join(flow_assessment.get('issues', []))}",
+                        user_id="quality_control_enhanced_assessment",
                         conversation_context=conversation_text
                     )
                 
                 if attempt < QUALITY_CONTROL_MAX_RETRIES - 1:
-                    print(f"🔄 Quality Control: Regenerating response...")
-                    continue
-            else:
-                print(f"⚠️ Quality Control: Assessment failed on attempt {attempt + 1}")
-                if attempt < QUALITY_CONTROL_MAX_RETRIES - 1:
+                    print(f"🔄 Quality Control: Regenerating response (attempt {attempt + 2}/{QUALITY_CONTROL_MAX_RETRIES})...")
+                    
+                    # 🎯 ENHANCED RETRY CONTEXT: Include rejected response and specific issues for learning
+                    rejected_response_context = f"\n\nPREVIOUS ATTEMPT FAILED:\nRejected Response: \"{response_text}\"\nScore: {combined_score:.1f}/100 (below {adaptive_threshold:.1f} threshold)\nSpecific Issues: {', '.join(flow_assessment.get('issues', []))}"
+                    
+                    # Add variation to the input to encourage different responses
+                    # Check if length was an issue and adjust prompts accordingly
+                    length_issue = any("too long" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    third_person_issue = any("third person" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    self_addressing_issue = any("addressing" in issue.lower() or "self-conversation" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    repetitive_issue = any("repetitive" in issue.lower() or "duplicate" in issue.lower() for issue in flow_assessment.get('issues', []))
+                    
+                    if length_issue:
+                        variation_prompts = [
+                            "Keep it much shorter and more concise",
+                            "Give a brief, natural response", 
+                            "Respond with just a few words or a short sentence",
+                            "Be more direct and to the point",
+                            "Keep it simple and short"
+                        ]
+                    elif third_person_issue:
+                        variation_prompts = [
+                            "Speak in FIRST PERSON only - use 'I' not your character name",
+                            "Respond as yourself using 'I' statements, not third person",
+                            "Use first person perspective - 'I think' not 'Character thinks'",
+                            "Speak directly as the character using 'I' and 'me'",
+                            "Avoid referring to yourself by name - use first person"
+                        ]
+                    elif self_addressing_issue:
+                        variation_prompts = [
+                            "Respond naturally to the conversation, don't address other characters directly",
+                            "Engage with the conversation flow, avoid talking to specific people",
+                            "React to what was said without addressing anyone by name",
+                            "Keep it conversational without direct addressing",
+                            "Respond to the topic, not to specific individuals"
+                        ]
+                    elif repetitive_issue:
+                        variation_prompts = [
+                            "Try a completely different response approach",
+                            "Use different words and phrasing entirely", 
+                            "Take a fresh angle on the topic",
+                            "Respond with a different perspective",
+                            "Avoid repeating previous patterns"
+                        ]
+                    else:
+                        variation_prompts = [
+                            "Try a different approach",
+                            "Be more conversational", 
+                            "Keep it shorter and more natural",
+                            "Focus on responding to the conversation",
+                            "Try a different angle"
+                        ]
+                    
+                    # Create enhanced retry prompt with rejected response context
+                    retry_guidance = variation_prompts[min(attempt, len(variation_prompts) - 1)]
+                    enhanced_input = f"{input_text}\n\n🔄 RETRY GUIDANCE: {retry_guidance}{rejected_response_context}"
+                    
+                    # Update input_text for the retry
+                    input_text = enhanced_input
+                    
                     continue
         
         except Exception as e:
@@ -1390,21 +2024,42 @@ def generate_character_response_with_quality_control(character_name, conversatio
             if attempt < QUALITY_CONTROL_MAX_RETRIES - 1:
                 continue
     
-    # All attempts failed - return the last response anyway with warning
-    print(f"⚠️ Quality Control: All {QUALITY_CONTROL_MAX_RETRIES} attempts failed, using last generated response")
-    return response_text if 'response_text' in locals() else f"I'm having trouble generating a good response right now. *{character_name} scratches head*"
+    # All attempts failed - check if we should use fallback or return None
+    if NO_FALLBACK_MODE:
+        print(f"💥 Quality Control: All {QUALITY_CONTROL_MAX_RETRIES} attempts failed in NO_FALLBACK_MODE")
+        print(f"   Returning None - calling code must handle this failure")
+        return None
+    else:
+        # Traditional fallback mode
+        print(f"⚠️ Quality Control: All {QUALITY_CONTROL_MAX_RETRIES} attempts failed, using last generated response")
+        return response_text if 'response_text' in locals() else f"I'm having trouble generating a good response right now. *{character_name} scratches head*"
 
 def _assess_response_quality_with_llm(character_name, response_text, conversation_context, retrieved_context=""):
     """
     Advanced automatic quality assessment using LLM to evaluate character accuracy.
     Returns a quality score 1-5 and detailed feedback, or None if assessment fails.
+    Enhanced with conversation flow analysis.
     """
     try:
         # Get character description for reference
         character_description = get_character_description(character_name)
         
-        # Create assessment prompt
-        assessment_prompt = f"""You are an expert evaluator of Family Guy character accuracy. Your job is to rate how well a response matches the target character's personality, speech patterns, and behavior.
+        # Extract last speaker from conversation context for flow analysis
+        last_speaker = None
+        if conversation_context:
+            context_lines = conversation_context.strip().split('\n')
+            for line in reversed(context_lines):
+                if ":" in line and not line.startswith("Human:"):
+                    last_speaker = line.split(":")[0].strip()
+                    break
+        
+        # Perform conversation flow assessment
+        flow_assessment = _assess_conversation_flow_quality(
+            character_name, response_text, conversation_context, last_speaker
+        )
+        
+        # Create enhanced assessment prompt
+        assessment_prompt = f"""You are an expert evaluator of Family Guy character accuracy and conversation flow. Your job is to rate how well a response matches the target character while maintaining natural conversation dynamics.
 
 CHARACTER TO EVALUATE: {character_name} from Family Guy
 
@@ -1420,30 +2075,54 @@ FAMILY GUY UNIVERSE CONTEXT:
 RESPONSE TO EVALUATE:
 "{response_text}"
 
-EVALUATION CRITERIA:
-1. **Single Character Voice** (35%): MOST IMPORTANT - Does the response contain ONLY {character_name} speaking as themselves? No mixed conversations, no dialogue between multiple characters, no addressing other characters directly.
-2. **First Person Consistency** (25%): Does {character_name} speak in first person ("I think", "I feel") rather than third person ("{character_name} thinks", "{character_name} says")?
-3. **Speech Patterns** (20%): Does the character use their typical vocabulary, catchphrases, and speaking style?
-4. **Personality Accuracy** (15%): Does the response reflect their core personality traits and motivations?
-5. **Contextual Appropriateness** (5%): Does the response fit the conversation naturally?
+LAST SPEAKER: {last_speaker if last_speaker else "Unknown"}
+
+CONVERSATION FLOW ANALYSIS:
+- Flow Score: {flow_assessment['flow_score']:.1f}/100.0
+- Issues Detected: {', '.join(flow_assessment['issues']) if flow_assessment['issues'] else 'None'}
+- Strengths: {', '.join(flow_assessment['strengths']) if flow_assessment['strengths'] else 'None'}
+- Conversation Awareness: {'Yes' if flow_assessment['conversation_awareness'] else 'No'}
+- Monologue Tendency: {'Yes' if flow_assessment['monologue_tendency'] else 'No'}
+
+ENHANCED EVALUATION CRITERIA:
+1. **Single Character Voice** (25%): Does the response contain ONLY {character_name} speaking as themselves? No mixed conversations, no dialogue between multiple characters, no addressing other characters directly.
+
+2. **Conversation Flow** (25%): CRITICAL - Does the response feel like natural conversation? Does it acknowledge the context? Does it avoid sounding like the character is talking to themselves?
+
+3. **First Person Consistency** (20%): Does {character_name} speak in first person ("I think", "I feel") rather than third person ("{character_name} thinks", "{character_name} says")?
+
+4. **Speech Patterns** (15%): Does the character use their typical vocabulary, catchphrases, and speaking style?
+
+5. **Personality Accuracy** (10%): Does the response reflect their core personality traits and motivations?
+
+6. **Contextual Appropriateness** (5%): Does the response fit the conversation naturally without abrupt topic changes?
 
 MAJOR RED FLAGS (Automatic 1-2 rating):
+- SELF-CONVERSATION: Character seems to be continuing their own previous thought without acknowledging it's a new turn
 - MIXED CHARACTER CONVERSATIONS: Any dialogue between multiple characters (e.g., "Peter: ... Brian: ...")
 - DIRECT ADDRESSING: Speaking TO other characters (e.g., "Peter, you..." or "Hey Brian")
-- NARRATIVE DESCRIPTIONS: Describing multiple characters' actions (e.g., "Brian looks at Peter while...")
-- THIRD PERSON SELF-REFERENCE: Speaking about themselves in third person (e.g., "Brian thinks..." instead of "I think...")
-- DIALOGUE FORMATTING: Using quotes, colons, or stage directions that suggest multiple speakers
-- CHARACTER CONFUSION: Using vocabulary/mannerisms of other characters
+- MONOLOGUE MODE: Talking to themselves rather than engaging in conversation
+- NARRATIVE DESCRIPTIONS: Describing multiple characters' actions
+- THIRD PERSON SELF-REFERENCE: Speaking about themselves in third person
+- CONVERSATION IGNORANCE: Completely ignoring the conversation context
+- TOPIC HIJACKING: Abruptly changing topics without acknowledgment
+
+CONVERSATION FLOW BONUSES (Add 0.5-1.0 points):
+- Natural conversation awareness and engagement
+- Appropriate reactions to previous messages
+- Questions or statements that invite further conversation
+- Smooth topic transitions with acknowledgment
+- Character-appropriate conversation style
 
 SCORING SCALE:
-5 = Excellent single character voice, stays in first person, very authentic
-4 = Good character accuracy with minor voice issues
-3 = Acceptable but some character inconsistencies or voice problems
-2 = Poor character accuracy, significant voice violations, or mixed conversations
-1 = Very poor, mixed character dialogue, major voice violations
+5 = Excellent character voice with natural conversation flow
+4 = Good character accuracy with minor conversation flow issues
+3 = Acceptable character with some conversation awkwardness
+2 = Poor character accuracy or significant conversation flow problems
+1 = Very poor, sounds like talking to self or major character violations
 
 Please provide:
-1. Overall rating (1-5)
+1. Overall rating (1-5) considering BOTH character accuracy AND conversation flow
 2. Brief strengths (what worked well)
 3. Brief weaknesses (what could improve)
 4. Specific suggestions for improvement
@@ -1472,7 +2151,6 @@ Suggestions: [specific improvements]"""
                 try:
                     rating_text = line.split(':')[1].strip()
                     # Remove any non-numeric characters except decimal point
-                    import re
                     numbers = re.findall(r'\d+(?:\.\d+)?', rating_text)
                     if numbers:
                         rating = float(numbers[0])
@@ -1488,7 +2166,6 @@ Suggestions: [specific improvements]"""
                     else:
                         rating_text = line.split('**Overall rating:**')[1].strip()
                     
-                    import re
                     numbers = re.findall(r'\d+(?:\.\d+)?', rating_text)
                     if numbers:
                         rating = float(numbers[0])
@@ -1498,7 +2175,6 @@ Suggestions: [specific improvements]"""
             # Strategy 3: Look for any line that contains "rating" and a number
             elif 'rating' in line.lower() and any(char.isdigit() for char in line):
                 try:
-                    import re
                     # Look for patterns like "rating: 4", "4/5", "4.5/5", etc.
                     patterns = [
                         r'rating[:\s]*(\d+(?:\.\d+)?)',
@@ -1524,7 +2200,6 @@ Suggestions: [specific improvements]"""
         # If we still don't have a rating, try a more aggressive search
         if rating is None:
             try:
-                import re
                 # Look for any number between 1-5 in the entire text
                 all_numbers = re.findall(r'\b([1-5](?:\.[0-9]+)?)\b', assessment_text)
                 if all_numbers:
@@ -1538,28 +2213,47 @@ Suggestions: [specific improvements]"""
             except:
                 pass
         
+        # Combine LLM rating with conversation flow assessment
         if rating is not None and 1 <= rating <= 5:
-            # Combine feedback into a single string
-            feedback = f"Strengths: {feedback_parts.get('strengths', 'N/A')}. Weaknesses: {feedback_parts.get('weaknesses', 'N/A')}. Suggestions: {feedback_parts.get('suggestions', 'N/A')}"
+            # Weight the final rating: 70% LLM assessment, 30% conversation flow
+            flow_weight = 0.3
+            llm_weight = 0.7
+            
+            combined_rating = (rating * llm_weight) + (flow_assessment['flow_score'] * flow_weight)
+            combined_rating = max(1.0, min(5.0, combined_rating))
+            
+            # Combine feedback
+            flow_feedback = f"Flow issues: {', '.join(flow_assessment['issues'])}" if flow_assessment['issues'] else "Good conversation flow"
+            flow_strengths = f"Flow strengths: {', '.join(flow_assessment['strengths'])}" if flow_assessment['strengths'] else ""
+            
+            feedback = f"LLM Assessment - Strengths: {feedback_parts.get('strengths', 'N/A')}. Weaknesses: {feedback_parts.get('weaknesses', 'N/A')}. {flow_feedback}. {flow_strengths}. Suggestions: {feedback_parts.get('suggestions', 'N/A')}"
             
             return {
-                "rating": rating,
+                "rating": combined_rating,
                 "feedback": feedback,
-                "detailed_assessment": feedback_parts
+                "detailed_assessment": feedback_parts,
+                "flow_assessment": flow_assessment,
+                "llm_rating": rating,
+                "flow_rating": flow_assessment['flow_score']
             }
         else:
             print(f"⚠️ LLM assessment failed to parse rating from: {assessment_text[:200]}...")
             print(f"⚠️ Full assessment text: {assessment_text}")
-            # Return a fallback rating based on basic heuristics
+            # Return a fallback rating based on basic heuristics and flow assessment
             fallback_rating = _assess_response_quality_basic(character_name, response_text)
+            combined_rating = (fallback_rating * 0.7) + (flow_assessment['flow_score'] * 0.3)
+            
             return {
-                "rating": fallback_rating,
-                "feedback": "Fallback assessment used due to parsing failure",
-                "detailed_assessment": {"fallback": True}
+                "rating": combined_rating,
+                "feedback": f"Fallback assessment used due to parsing failure. {', '.join(flow_assessment['issues']) if flow_assessment['issues'] else 'Good conversation flow'}",
+                "detailed_assessment": {"fallback": True},
+                "flow_assessment": flow_assessment,
+                "llm_rating": None,
+                "flow_rating": flow_assessment['flow_score']
             }
             
     except Exception as e:
-        print(f"⚠️ Error in LLM auto-assessment: {e}")
+        print(f"⚠️ Error in enhanced LLM auto-assessment: {e}")
         return None
 
 def _assess_response_quality_basic(character_name, response_text):
@@ -1603,7 +2297,6 @@ def _assess_response_quality_basic(character_name, response_text):
                 score -= 0.5
         
         # Check for mixed character conversation violations (major penalty)
-        import re
         mixed_conversation_indicators = [
             r'(peter|brian|stewie|lois|meg|chris):\s*[^:]+\s*(peter|brian|stewie|lois|meg|chris):',  # Multiple character dialogue
             r'(peter|brian|stewie|lois|meg|chris)\s+(said|says|replied|responded)',  # Narrative format
@@ -1831,32 +2524,58 @@ INITIAL_CONVERSATION_PROMPTS = [
     "Random thought of the day: Why do we continue to tolerate such mediocrity?", # Brian (cynical)
 ]
 
-def clean_llm_response(text):
-    """Strips unwanted prefixes and placeholders from LLM responses."""
+def clean_llm_response(text, character_name=None):
+    """
+    Strips unwanted prefixes and placeholders from LLM responses.
+    
+    Args:
+        text: The response text to clean
+        character_name: The character generating this response (to avoid removing valid quotes of other characters)
+    """
     cleaned_text = text.strip()
     
     # Remove common AI prefixes (case-insensitive and with potential mentions)
-    prefixes_to_remove = [
+    ai_prefixes_to_remove = [
         "AI:", "Assistant:", "Bot:",
         "AI: @Peter Griffin:", "AI: @Brian Griffin:", "AI: @Stewie Griffin:",
         "Assistant: @Peter Griffin:", "Assistant: @Brian Griffin:", "Assistant: @Stewie Griffin:",
         "Bot: @Peter Griffin:", "Bot: @Brian Griffin:", "Bot: @Stewie Griffin:",
-        # Character names with full names as prefixes
-        "Peter Griffin:", "Brian Griffin:", "Stewie Griffin:",
-        "Peter:", "Brian:", "Stewie:", # Character names as prefixes
-        "Peter: @Brian Griffin:", "Brian: @Peter Griffin:", "Stewie: @Brian Griffin:",
-        "Peter: @Stewie Griffin:", "Stewie: @Peter Griffin:", "Brian: @Stewie Griffin:",
-        # Additional character name variations
-        "Peter Griffin said:", "Brian Griffin said:", "Stewie Griffin said:",
-        "Peter said:", "Brian said:", "Stewie said:",
-        "Peter responds:", "Brian responds:", "Stewie responds:",
-        "Peter Griffin responds:", "Brian Griffin responds:", "Stewie Griffin responds:"
+        # Additional AI variations
+        "AI (as", "Assistant (as", "Bot (as",
+        "AI as", "Assistant as", "Bot as"
     ]
-    for prefix in prefixes_to_remove:
+    
+    for prefix in ai_prefixes_to_remove:
         if cleaned_text.lower().startswith(prefix.lower()):
             cleaned_text = cleaned_text[len(prefix):].strip()
             break # Remove only the first matching prefix
 
+    # 🎯 ENHANCED: Remove character self-references but allow quoting other characters
+    if character_name:
+        character_lower = character_name.lower()
+        
+        # Remove SELF-references (character talking about themselves)
+        self_reference_patterns = [
+            f"^{character_lower}:",
+            f"^{character_lower} griffin:",
+            f"^@{character_lower}:",
+            f"^@{character_lower} griffin:",
+            f"^{character_lower} said:",
+            f"^{character_lower} responds:",
+            f"^{character_lower} griffin said:",
+            f"^{character_lower} griffin responds:",
+            f"^i am {character_lower}:",
+            f"^this is {character_lower}:",
+            f"^it's {character_lower}:",
+        ]
+        
+        for pattern in self_reference_patterns:
+            if re.match(pattern, cleaned_text, re.IGNORECASE):
+                # Remove the self-reference prefix
+                match = re.match(pattern, cleaned_text, re.IGNORECASE)
+                cleaned_text = cleaned_text[len(match.group()):].strip()
+                break
+    
     # Remove [HumanName] and User placeholders
     cleaned_text = cleaned_text.replace("[HumanName]", "").replace("User", "").strip()
     
@@ -1865,10 +2584,11 @@ def clean_llm_response(text):
     cleaned_text = cleaned_text.replace("[END CONVERSATION]", "").strip()
     cleaned_text = cleaned_text.replace("[END_CONVERSATION]", "").strip()
 
-    # Additional cleanup for character name patterns that might appear mid-text
-    import re
-    # Remove patterns like "Peter Griffin: " at the start of lines
-    cleaned_text = re.sub(r'^(Peter Griffin|Brian Griffin|Stewie Griffin|Peter|Brian|Stewie):\s*', '', cleaned_text, flags=re.IGNORECASE)
+    # 🎯 ALWAYS REMOVE: "Me:" patterns (never valid)
+    cleaned_text = re.sub(r'^(Me|ME):\s*', '', cleaned_text, flags=re.IGNORECASE)
+    
+    # 🎯 ALWAYS REMOVE: Generic character self-references without context
+    cleaned_text = re.sub(r'^(I am |This is |It\'s )(Peter Griffin|Brian Griffin|Stewie Griffin|Peter|Brian|Stewie)[\.,:]?\s*', '', cleaned_text, flags=re.IGNORECASE)
     
     # Remove quotation marks if the entire response is wrapped in quotes
     if cleaned_text.startswith('"') and cleaned_text.endswith('"') and cleaned_text.count('"') == 2:
@@ -2129,6 +2849,7 @@ Use these exact mention strings when referring to other characters in your respo
 
         # Generate response using centralized LLM
         retries = 0
+        response_text = None
         while retries < MAX_RETRIES:
             try:
                 print(f"Orchestrator generating {current_speaker_name}'s response using quality-controlled generation (attempt {retries + 1}/{MAX_RETRIES})...")
@@ -2138,8 +2859,32 @@ Use these exact mention strings when referring to other characters in your respo
                     mention_context=mention_context,
                     input_text="Continue the conversation.", # This might need to be the actual user_query for the first turn.
                     retrieved_context=retrieved_context,
-                    human_user_display_name=human_user_display_name
+                    human_user_display_name=human_user_display_name,
+                    channel_id=channel_id  # Pass channel_id for adaptive quality control
                 )
+                
+                # 🚫 NO FALLBACK MODE: Handle None responses
+                if response_text is None:
+                    if NO_FALLBACK_MODE:
+                        print(f"💥 NO_FALLBACK_MODE: {current_speaker_name} returned None response on attempt {retries + 1}")
+                        retries += 1
+                        if retries < MAX_RETRIES:
+                            print(f"🔄 Retrying response generation (attempt {retries + 1}/{MAX_RETRIES})...")
+                            continue
+                        else:
+                            print(f"💥 CRITICAL: NO_FALLBACK_MODE failed after {MAX_RETRIES} orchestrator attempts!")
+                            print(f"   This indicates a serious issue with the LLM or quality control system.")
+                            print(f"   Consider temporarily disabling NO_FALLBACK_MODE or checking system health.")
+                            return jsonify({
+                                "error": "NO_FALLBACK_MODE: Failed to generate valid response after maximum retries",
+                                "details": f"Character {current_speaker_name} could not generate a valid response after {MAX_RETRIES} attempts",
+                                "suggestion": "Check LLM health, lower quality thresholds, or disable NO_FALLBACK_MODE temporarily"
+                            }), 500
+                    else:
+                        # Traditional mode - this shouldn't happen but handle gracefully
+                        print(f"⚠️ Unexpected None response from {current_speaker_name}, treating as error")
+                        raise Exception("Quality control returned None response unexpectedly")
+                
                 print(f"{current_speaker_name}'s centralized LLM generated: {response_text[:50]}...")
                 break
             except Exception as e:
@@ -2175,6 +2920,17 @@ Use these exact mention strings when referring to other characters in your respo
         conversations_collection.insert_one(bot_message_doc)
         conversation_history_for_llm.append(AIMessage(content=response_text, name=current_speaker_name.lower()))
 
+        # 🚨 CRITICAL: Validate Discord message length before sending
+        if len(response_text) > 2000:
+            print(f"🚨 CRITICAL: Response too long for Discord ({len(response_text)} chars), truncating...")
+            response_text = response_text[:1900] + "..."
+            # Update the stored message as well
+            bot_message_doc["content"] = response_text
+            conversations_collection.replace_one(
+                {"_id": bot_message_doc.get("_id")}, 
+                bot_message_doc
+            )
+
         # Add retry logic for Discord message sending
         retries = 0
         discord_payload = {
@@ -2189,6 +2945,23 @@ Use these exact mention strings when referring to other characters in your respo
                 discord_response.raise_for_status()
                 print(f"Successfully sent {current_speaker_name}'s response to Discord")
                 break
+            except requests.exceptions.HTTPError as e:
+                # Check if it's a Discord length error
+                if e.response.status_code == 400 and "2000 or fewer in length" in str(e.response.text):
+                    print(f"🚨 Discord length error detected, truncating response further...")
+                    response_text = response_text[:1500] + "..."
+                    discord_payload["message_content"] = response_text
+                    # Try once more with truncated message
+                    try:
+                        discord_response = requests.post(current_speaker_config["discord_send_api"], json=discord_payload, timeout=API_TIMEOUT)
+                        discord_response.raise_for_status()
+                        print(f"Successfully sent truncated {current_speaker_name}'s response to Discord")
+                        break
+                    except Exception as truncate_error:
+                        print(f"Failed even with truncated message: {truncate_error}")
+                        raise e  # Raise original error
+                else:
+                    raise e  # Re-raise if not a length error
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 retries += 1
                 if retries == MAX_RETRIES:
@@ -2700,7 +3473,16 @@ def get_quality_control_status():
             "configuration": {
                 "enabled": QUALITY_CONTROL_ENABLED,
                 "min_rating_threshold": QUALITY_CONTROL_MIN_RATING,
-                "max_retries": QUALITY_CONTROL_MAX_RETRIES
+                "max_retries": QUALITY_CONTROL_MAX_RETRIES,
+                "adaptive_quality_control_enabled": ADAPTIVE_QUALITY_CONTROL_ENABLED,
+                "cold_start_threshold": COLD_START_THRESHOLD,
+                "warm_conversation_threshold": WARM_CONVERSATION_THRESHOLD,
+                "hot_conversation_threshold": HOT_CONVERSATION_THRESHOLD,
+                "no_fallback_mode": NO_FALLBACK_MODE,
+                "max_retry_attempts": MAX_RETRY_ATTEMPTS,
+                "retry_backoff_enabled": RETRY_BACKOFF_ENABLED,
+                "retry_backoff_multiplier": RETRY_BACKOFF_MULTIPLIER,
+                "enhanced_retry_context_enabled": ENHANCED_RETRY_CONTEXT_ENABLED
             },
             "statistics": quality_control_stats,
             "generated_at": datetime.now().isoformat()
@@ -3573,8 +4355,73 @@ def validate_character_response(character_name, response_text):
         if not response_text or len(response_text.strip()) < 3:
             return False, None
         
-        # Check for character identity confusion (speaking as other characters)
         response_lower = response_text.lower()
+        
+        # 🚨 CRITICAL: Check for AI indicators or meta-references (ENHANCED)
+        ai_indicators = [
+            "ai (as", "ai as", "assistant", "language model", "i am an ai",
+            "as an ai", "i'm an ai", "artificial intelligence", "chatbot",
+            "i am a bot", "i'm a bot", "generated by", "powered by",
+            "ai (", "ai:", "ai ", "(as ", "as an assistant", "as a language",
+            "i'm programmed", "my programming", "i was created", "i was designed",
+            "ai generated", "artificial", "bot response", "automated"
+        ]
+        
+        for indicator in ai_indicators:
+            if indicator in response_lower:
+                print(f"🚨 CRITICAL: AI indicator detected in {character_name} response: '{indicator}'")
+                return False, None
+        
+        # 🚨 CRITICAL: Enhanced third-person self-reference detection
+        character_lower = character_name.lower()
+        third_person_self_patterns = [
+            f'{character_lower} thinks',
+            f'{character_lower} says',
+            f'{character_lower} looks',
+            f'{character_lower} feels',
+            f'{character_lower} walks',
+            f'{character_lower} goes',
+            f'{character_lower} responds',
+            f'{character_lower} replies',
+            f'{character_lower} turns to',
+            f'{character_lower} decides',
+            f'{character_lower} realizes',
+            f'{character_lower} notices',
+            f'{character_lower} remembers',
+            f'{character_lower} wonders',
+            f'{character_lower} considers',
+            f'{character_lower} believes',
+            f'{character_lower} knows',
+            f'{character_lower} understands',
+            f'{character_lower} wants',
+            f'{character_lower} needs',
+            f'{character_lower} has',
+            f'{character_lower} is',
+            f'{character_lower} was',
+            f'{character_lower} will',
+            f'{character_lower} would',
+            f'{character_lower} should',
+            f'{character_lower} could',
+            f'{character_lower} might',
+            f'{character_lower}\'s',  # Possessive forms
+            f'to {character_lower}',
+            f'for {character_lower}',
+            f'with {character_lower}',
+            f'about {character_lower}',
+            # Special cases for specific characters
+            f'stewie\'s latest',
+            f'stewie\'s invention',
+            f'stewie\'s plan',
+            f'peter\'s',
+            f'brian\'s'
+        ]
+        
+        for pattern in third_person_self_patterns:
+            if pattern in response_lower:
+                print(f"🚨 CRITICAL: Third-person self-reference detected in {character_name} response: '{pattern}'")
+                return False, None
+        
+        # Check for character identity confusion (speaking as other characters)
         
         # Detect if character is speaking AS another character
         identity_violations = []
@@ -3598,15 +4445,15 @@ def validate_character_response(character_name, response_text):
             print(f"⚠️ Identity violation detected for {character_name}: {identity_violations}")
             return False, None
         
-        # Check for inappropriate length by character
-        if character_name == "Peter" and len(response_text) > 500: # Reduced for Peter's style
-            print(f"⚠️ Peter response too long: {len(response_text)} characters")
+        # 🚨 CRITICAL: Discord message length validation (2000 character limit)
+        if len(response_text) > 1900:  # Leave buffer for safety
+            print(f"🚨 CRITICAL: Response too long for Discord: {len(response_text)} characters (limit: 2000)")
             return False, None
-        elif character_name == "Brian" and len(response_text) > 1800:
-            print(f"⚠️ Brian response too long: {len(response_text)} characters")
-            return False, None
-        elif character_name == "Stewie" and len(response_text) > 1800:
-            print(f"⚠️ Stewie response too long: {len(response_text)} characters")
+        
+        # Check for inappropriate length by character (RELAXED - let adaptive system handle this)
+        # Only reject extremely long responses that would break Discord
+        if len(response_text) > 1500:  # Much more lenient - let adaptive system handle normal length control
+            print(f"⚠️ {character_name} response extremely long: {len(response_text)} characters (Discord limit)")
             return False, None
         
         # Check for vocabulary mismatch
@@ -3633,10 +4480,13 @@ def validate_character_response(character_name, response_text):
                     return False, None
         
         elif character_name == "Stewie":
-            # Stewie should have British mannerisms
-            if len(response_text) > 30 and not any(phrase in response_lower for phrase in [
-                "blast", "deuce", "what the", "indeed", "quite", "rather", "brilliant", "fool", "imbecile"
-            ]):
+            # Stewie should have British mannerisms, but be more lenient for short responses
+            british_phrases = [
+                "blast", "deuce", "what the", "indeed", "quite", "rather", "brilliant", "fool", "imbecile",
+                "bloody", "blimey", "bollocks", "poppycock", "balderdash", "smashing", "jolly", "by jove"
+            ]
+            # Only require British mannerisms for longer responses (>50 chars) to allow natural short replies
+            if len(response_text) > 50 and not any(phrase in response_lower for phrase in british_phrases):
                 print(f"⚠️ Stewie response lacks British mannerisms")
                 return False, None
         
@@ -3645,41 +4495,77 @@ def validate_character_response(character_name, response_text):
             print(f"⚠️ Cleveland/dog confusion detected")
             return False, None
         
-        # Enhanced validation: Check for direct addressing of other characters
-        # Characters should speak as themselves, not TO other characters directly
-        import re
-        direct_addressing_patterns = [
-            r'\b(peter|brian|stewie|lois|meg|chris|quagmire|cleveland)\s*[,:]',  # "Peter," or "Brian:"
-            r'@(peter|brian|stewie)',  # "@Peter" mentions
-            r'\b(hey|hi|hello)\s+(peter|brian|stewie|lois|meg|chris)',  # "Hey Peter"
-            r'\b(peter|brian|stewie|lois|meg|chris)\s+(you\b|your\b)',  # "Peter you" or "Brian your"
+        # 🎯 ENHANCED: Check for problematic self-reference prefixes (but allow quoting other characters)
+        character_lower = character_name.lower()
+        
+        # ALWAYS problematic patterns (regardless of character)
+        always_problematic = [
+            r'^me:\s*',  # "Me:" at start
+            r'^(i am |this is |it\'s )(peter|brian|stewie)(\s+griffin)?[\.,:]?\s*',  # "I am Peter Griffin:" at start
         ]
         
-        for pattern in direct_addressing_patterns:
+        for pattern in always_problematic:
             if re.search(pattern, response_lower):
-                # Allow self-reference (e.g., Brian talking about Brian is okay)
+                match = re.search(pattern, response_lower)
+                print(f"🚨 CRITICAL: Always problematic prefix detected in {character_name} response: '{match.group()}'")
+                return False, None
+        
+        # SELF-reference patterns (only problematic if character references themselves)
+        self_reference_patterns = [
+            f'^{character_lower}:\\s*',  # "Peter:" at start (only if Peter is speaking)
+            f'^{character_lower}\\s+griffin:\\s*',  # "Peter Griffin:" at start
+            f'^@{character_lower}(\\s+griffin)?\\s*:?\\s*',  # "@Peter Griffin:" at start
+        ]
+        
+        for pattern in self_reference_patterns:
+            if re.search(pattern, response_lower):
+                match = re.search(pattern, response_lower)
+                print(f"🚨 CRITICAL: Self-reference prefix detected in {character_name} response: '{match.group()}'")
+                return False, None
+        
+        # Enhanced validation: Check for direct addressing of other characters
+        # Characters should speak as themselves, not TO other characters directly
+        direct_addressing_patterns = [
+            r'\b(peter|brian|stewie|lois|meg|chris|quagmire|cleveland)\s*[,:]',  # "Peter," or "Brian:"
+            r'@\s*(peter|brian|stewie)',  # "@Peter" mentions
+            r'@\s*(peter|brian|stewie)\s+(griffin|bot)',  # "@Peter Griffin" mentions
+            r'\b(hey|hi|hello)\s+(peter|brian|stewie|lois|meg|chris)',  # "Hey Peter"
+            r'\b(peter|brian|stewie|lois|meg|chris)\s+(you\b|your\b)',  # "Peter you" or "Brian your"
+            r'\b(peter|brian|stewie)\s+(dear|old)\s+(boy|chap|friend)',  # "Brian dear boy", "Stewie old chap"
+            r'\b(well|look|listen),?\s+(peter|brian|stewie)',  # "Well, Peter" or "Look, Brian"
+        ]
+        
+        # Only check for self-addressing patterns (characters shouldn't address themselves)
+        self_addressing_patterns = [
+            r'@\s*(peter|brian|stewie)',  # "@Peter" mentions
+            r'@\s*(peter|brian|stewie)\s+(griffin|bot)',  # "@Peter Griffin" mentions
+        ]
+        
+        for pattern in self_addressing_patterns:
+            if re.search(pattern, response_lower):
                 match = re.search(pattern, response_lower)
                 if match:
                     addressed_name = None
                     for group in match.groups():
-                        if group and group.lower() in ['peter', 'brian', 'stewie', 'lois', 'meg', 'chris', 'quagmire', 'cleveland']:
+                        if group and group.lower() in ['peter', 'brian', 'stewie']:
                             addressed_name = group.lower()
                             break
                     
-                    if addressed_name and addressed_name != character_name.lower():
-                        print(f"⚠️ {character_name} directly addressing {addressed_name}: {match.group()}")
+                    # Only block if character is addressing themselves
+                    if addressed_name and addressed_name == character_name.lower():
+                        print(f"⚠️ {character_name} addressing themselves: {match.group()}")
                         return False, None
         
-        # Check for dialogue formatting that suggests multiple speakers
+        # Check for dialogue formatting that suggests multiple speakers (RELAXED)
+        # Only check for obvious stage directions, not normal punctuation
         dialogue_violations = [
-            '"' in response_text and response_text.count('"') >= 2,  # Multiple quoted sections
-            response_text.count(':') >= 2,  # Multiple colons suggesting dialogue
-            '[' in response_text and ']' in response_text,  # Stage directions like [Brian looks at Peter]
-            # Removed character_name prefix check since we clean those now
+            '[' in response_text and ']' in response_text and any(action in response_lower for action in ['looks at', 'turns to', 'walks to', 'says to']),  # Stage directions like [Brian looks at Peter]
+            response_text.count(':') >= 3,  # Multiple colons (3+) suggesting extensive dialogue
+            # Allow normal quotes and single colons for natural speech
         ]
         
         if any(dialogue_violations):
-            print(f"⚠️ {character_name} response contains dialogue formatting")
+            print(f"⚠️ {character_name} response contains obvious dialogue formatting")
             return False, None
         
         # Check for mixed character conversation patterns
@@ -3745,6 +4631,14 @@ def validate_character_response(character_name, response_text):
             f'{character_name.lower()} responds',
             f'{character_name.lower()} replies',
             f'{character_name.lower()} turns to',
+            f'{character_name.lower()}\'s plan',
+            f'{character_name.lower()}\'s idea',
+            f'{character_name.lower()}\'s invention',
+            f'{character_name.lower()}\'s latest',
+            f'{character_name.lower()}\'s approach',
+            f'{character_name.lower()}\'s strategy',
+            f'{character_name.lower()}\'s method',
+            f'{character_name.lower()} griffin',  # "Stewie Griffin" self-reference
         ]
         
         for pattern in third_person_patterns:
@@ -3758,6 +4652,893 @@ def validate_character_response(character_name, response_text):
     except Exception as e:
         print(f"⚠️ Error validating response: {e}")
         return True, response_text  # Allow response if validation fails
+
+# Enhanced Quality Control for Natural Conversation Flow
+def _assess_conversation_flow_quality(character_name, response_text, conversation_context, last_speaker=None):
+    """
+    Advanced conversation flow assessment to prevent bots from talking to themselves
+    and ensure natural conversation progression.
+    Returns a quality score 1-100 and detailed feedback. Only scores 75+ are acceptable.
+    """
+    try:
+        score = 50.0  # Start with neutral score (middle of 1-100 scale)
+        issues = []
+        strengths = []
+        
+        response_lower = response_text.lower()
+        
+        # 1. SELF-CONVERSATION DETECTION (Critical Issue)
+        if last_speaker and last_speaker.lower() == character_name.lower():
+            # Check if this response seems to continue the same thought/topic
+            # without acknowledging it's a different turn
+            self_continuation_indicators = [
+                "also", "and", "furthermore", "additionally", "moreover",
+                "speaking of which", "on that note", "by the way",
+                "oh and", "plus", "another thing"
+            ]
+            
+            if any(indicator in response_lower for indicator in self_continuation_indicators):
+                score -= 40.0  # Major penalty in 1-100 scale
+                issues.append("Appears to be continuing own previous thought without natural break")
+        
+        # 2. AI INDICATOR AND META-REFERENCE CHECK (CRITICAL)
+        ai_meta_indicators = [
+            "ai (as", "ai as", "assistant", "language model", "i am an ai",
+            "as an ai", "i'm an ai", "artificial intelligence", "chatbot",
+            "i am a bot", "i'm a bot", "generated by", "powered by",
+            "ai (", "ai:", "ai ", "(as ", "as an assistant", "as a language",
+            "i'm programmed", "my programming", "i was created", "i was designed",
+            "ai generated", "artificial", "bot response", "automated"
+        ]
+        
+        for indicator in ai_meta_indicators:
+            if indicator in response_lower:
+                score = 1.0  # Automatic failure (lowest score)
+                issues.append(f"CRITICAL: Contains AI indicator '{indicator}'")
+                break
+        
+        # 3. THIRD-PERSON SELF-REFERENCE CHECK (CRITICAL)
+        character_lower = character_name.lower()
+        third_person_patterns = [
+            f'{character_lower} thinks', f'{character_lower} says', f'{character_lower} looks',
+            f'{character_lower} feels', f'{character_lower} walks', f'{character_lower} goes',
+            f'{character_lower} responds', f'{character_lower} replies', f'{character_lower} turns to',
+            f'{character_lower} decides', f'{character_lower} realizes', f'{character_lower} notices',
+            f'{character_lower}\'s latest', f'{character_lower}\'s invention', f'{character_lower}\'s plan',
+            f'{character_lower}\'s idea', f'{character_lower}\'s approach', f'{character_lower}\'s strategy',
+            f'{character_lower} griffin',  # "Stewie Griffin" self-reference
+            f'@{character_lower}',  # "@stewie" self-mention
+            f'@{character_lower} griffin',  # "@stewie griffin" self-mention
+        ]
+        
+        for pattern in third_person_patterns:
+            if pattern in response_lower:
+                score -= 40.0  # Major penalty in 1-100 scale
+                issues.append(f"CRITICAL: Third-person self-reference '{pattern}'")
+        
+        # 4. PROBLEMATIC PREFIX CHECK (CRITICAL)
+        # Check for self-reference prefixes (but allow quoting other characters)
+        character_lower = character_name.lower()
+        
+        # ALWAYS problematic patterns (regardless of character)
+        always_problematic_patterns = [
+            r'^me:\s*',  # "Me:" at start
+            r'^(i am |this is |it\'s )(peter|brian|stewie)(\s+griffin)?[\.,:]?\s*',  # "I am Peter Griffin:" at start
+        ]
+        
+        for pattern in always_problematic_patterns:
+            if re.search(pattern, response_lower):
+                score = 1.0  # Automatic failure
+                issues.append(f"CRITICAL: Always problematic prefix detected: '{re.search(pattern, response_lower).group()}'")
+                break
+        
+        # SELF-reference patterns (only problematic if character references themselves)
+        self_reference_patterns = [
+            f'^{character_lower}:\\s*',  # "Peter:" at start (only if Peter is speaking)
+            f'^{character_lower}\\s+griffin:\\s*',  # "Peter Griffin:" at start
+            f'^@{character_lower}(\\s+griffin)?\\s*:?\\s*',  # "@Peter Griffin:" at start
+        ]
+        
+        for pattern in self_reference_patterns:
+            if re.search(pattern, response_lower):
+                score = 1.0  # Automatic failure
+                issues.append(f"CRITICAL: Self-reference prefix detected: '{re.search(pattern, response_lower).group()}'")
+                break
+        
+        # 5. SELF-ADDRESSING CHECK (CRITICAL)
+        # Characters should not address themselves (@mentions or self-reference)
+        self_addressing_patterns = [
+            r'@\s*(peter|brian|stewie)',  # "@Peter" mentions
+            r'@\s*(peter|brian|stewie)\s+(griffin|bot)',  # "@Peter Griffin"
+        ]
+        
+        for pattern in self_addressing_patterns:
+            matches = re.findall(pattern, response_lower, re.IGNORECASE)
+            if matches:
+                for match in matches:
+                    addressed_name = None
+                    if isinstance(match, tuple):
+                        # Find the character name in the match
+                        for part in match:
+                            if part.lower() in ['peter', 'brian', 'stewie']:
+                                addressed_name = part.lower()
+                                break
+                    else:
+                        addressed_name = match.lower()
+                    
+                    # Only penalize if addressing themselves
+                    if addressed_name and addressed_name == character_name.lower():
+                        score -= 35.0  # Major penalty for self-addressing
+                        issues.append(f"CRITICAL: Self-addressing with @{addressed_name}")
+        
+        # 5. SPEAKER ATTRIBUTION ACCURACY (New Critical Check)
+        if conversation_context:
+            attribution_issues = _check_speaker_attribution(response_text, conversation_context, character_name)
+            if attribution_issues:
+                score -= 30.0  # Major penalty for incorrect attribution in 1-100 scale
+                issues.extend(attribution_issues)
+            else:
+                strengths.append("Correct speaker attribution")
+                score += 5.0  # Small bonus for correct attribution
+        
+        # 6. CONVERSATION COHERENCE CHECK
+        # Check if response acknowledges the conversation context appropriately
+        if conversation_context:
+            context_lines = conversation_context.strip().split('\n')
+            if len(context_lines) >= 2:
+                last_human_message = None
+                last_bot_message = None
+                
+                # Find the most recent human and bot messages
+                for line in reversed(context_lines):
+                    if line.startswith("Human:") and not last_human_message:
+                        last_human_message = line[6:].strip().lower()
+                    elif ":" in line and not line.startswith("Human:") and not last_bot_message:
+                        last_bot_message = line.split(":", 1)[1].strip().lower()
+                
+                # Check if response is relevant to recent conversation
+                if last_human_message:
+                    # Extract key topics from human message
+                    human_topics = set(word for word in last_human_message.split() 
+                                     if len(word) > 3 and word.isalpha())
+                    response_words = set(word for word in response_lower.split() 
+                                       if len(word) > 3 and word.isalpha())
+                    
+                    # Check for topic relevance
+                    topic_overlap = len(human_topics.intersection(response_words))
+                    if topic_overlap == 0 and len(human_topics) > 2:
+                        # Check if it's a complete topic change without acknowledgment
+                        topic_change_acknowledgments = [
+                            "anyway", "speaking of", "by the way", "oh", "wait",
+                            "actually", "you know what", "that reminds me"
+                        ]
+                        
+                        if not any(ack in response_lower for ack in topic_change_acknowledgments):
+                            score -= 15.0  # Adjusted for 1-100 scale
+                            issues.append("Abrupt topic change without acknowledgment")
+                        else:
+                            strengths.append("Natural topic transition")
+                            score += 5.0  # Bonus for good transitions
+        
+        # 6. RESPONSE TIMING AND CONTEXT AWARENESS
+        # Check if response seems aware it's part of an ongoing conversation
+        conversation_awareness_indicators = [
+            # Good indicators of conversation awareness
+            "you", "your", "that", "this", "what you", "like you said",
+            "i agree", "i disagree", "interesting", "good point",
+            "you're right", "you're wrong", "i think", "in my opinion"
+        ]
+        
+        monologue_indicators = [
+            # Indicators of talking to oneself/monologue
+            "i was thinking", "i've been wondering", "i should",
+            "i need to", "i want to", "my plan", "my idea",
+            "let me tell you", "here's what", "i'll just"
+        ]
+        
+        awareness_score = sum(1 for indicator in conversation_awareness_indicators 
+                            if indicator in response_lower)
+        monologue_score = sum(1 for indicator in monologue_indicators 
+                            if indicator in response_lower)
+        
+        if awareness_score > monologue_score:
+            score += 10.0  # Better bonus for conversation awareness in 1-100 scale
+            strengths.append("Shows conversation awareness")
+        elif monologue_score > awareness_score * 2:
+            score -= 15.0  # Larger penalty for monologue tendency in 1-100 scale
+            issues.append("Sounds like talking to self rather than conversing")
+        
+        # 7. CHARACTER-SPECIFIC CONVERSATION STYLE CHECK
+        if character_name == "Peter":
+            # Peter should be reactive and simple
+            if any(word in response_lower for word in ["hehehe", "holy crap", "yeah", "awesome"]):
+                strengths.append("Authentic Peter reactions")
+                score += 10.0  # Better bonus for authentic character voice
+            
+            # Peter shouldn't give long explanations
+            if len(response_text) > 300:
+                score -= 10.0  # Larger penalty for verbosity in 1-100 scale
+                issues.append("Too verbose for Peter's character")
+                
+        elif character_name == "Brian":
+            # Brian should engage intellectually but not lecture
+            intellectual_engagement = any(word in response_lower for word in 
+                                        ["actually", "however", "interesting", "consider", "think"])
+            if intellectual_engagement:
+                strengths.append("Intellectual engagement appropriate for Brian")
+                score += 10.0  # Better bonus for intellectual character voice
+            
+            # Check for pretentious lecturing vs. conversation
+            lecturing_indicators = ["let me explain", "you see", "the fact is", "obviously"]
+            if any(indicator in response_lower for indicator in lecturing_indicators):
+                score -= 10.0  # Larger penalty for lecturing in 1-100 scale
+                issues.append("Sounds like lecturing rather than conversing")
+                
+        elif character_name == "Stewie":
+            # Stewie should be condescending but engaging
+            if any(word in response_lower for word in ["deuce", "blast", "fool", "imbecile"]):
+                strengths.append("Authentic Stewie condescension")
+                score += 10.0  # Better bonus for authentic character voice
+            
+            # Stewie shouldn't ignore others completely
+            if not any(word in response_lower for word in ["you", "your", "that", "this"]):
+                score -= 15.0  # Larger penalty for ignoring conversation in 1-100 scale
+                issues.append("Stewie ignoring conversation partners")
+        
+        # 8. NATURAL CONVERSATION FLOW INDICATORS
+        natural_flow_indicators = [
+            # Questions that invite response
+            "?", "what do you", "don't you", "right?", "you know?",
+            # Reactions to others
+            "really?", "seriously?", "no way", "i can't believe",
+            # Building on conversation
+            "that's", "so you're saying", "wait", "hold on"
+        ]
+        
+        flow_score = sum(1 for indicator in natural_flow_indicators 
+                        if indicator in response_lower)
+        if flow_score >= 2:
+            score += 10.0  # Better bonus for natural flow in 1-100 scale
+            strengths.append("Promotes natural conversation flow")
+        elif flow_score == 0 and len(response_text) > 50:
+            score -= 10.0  # Larger penalty for poor flow in 1-100 scale
+            issues.append("Doesn't promote conversation continuation")
+        
+        # 9. AVOID REPETITIVE PATTERNS
+        # Check for repetitive sentence structures or phrases
+        sentences = response_text.split('.')
+        if len(sentences) > 2:
+            sentence_starts = [s.strip()[:10].lower() for s in sentences if s.strip()]
+            if len(set(sentence_starts)) < len(sentence_starts) * 0.7:
+                score -= 10.0  # Larger penalty for repetition in 1-100 scale
+                issues.append("Repetitive sentence patterns")
+        
+        # 10. HALLUCINATION DETECTION (NEW)
+        if ANTI_HALLUCINATION_ENABLED:
+            hallucination_indicators = [
+                "comprehensive manual", "step-by-step process", "detailed instructions",
+                "as outlined in", "according to the", "as mentioned in the",
+                "the aforementioned", "previously discussed", "as we established",
+                "in our earlier conversation", "as you know from", "building on our",
+                "continuing from where", "as per our discussion"
+            ]
+            
+            hallucination_count = sum(1 for indicator in hallucination_indicators 
+                                    if indicator in response_lower)
+            
+            if hallucination_count > 0:
+                score -= (hallucination_count * 15.0)  # Heavy penalty for hallucination
+                issues.append(f"Potential hallucination detected ({hallucination_count} indicators)")
+            
+            # Check for over-elaboration (too much detail for simple conversation)
+            if len(response_text) > 300 and conversation_context:
+                context_length = len(conversation_context)
+                response_length = len(response_text)
+                
+                # If response is much longer than recent conversation context, it might be hallucinating
+                if response_length > context_length * 2:
+                    score -= 20.0  # Major penalty for over-elaboration
+                    issues.append("Response over-elaborates beyond conversation context")
+                    
+            # Check for introducing new "facts" not in conversation
+            fact_indicators = [
+                "the fact is", "it's well known that", "everyone knows",
+                "obviously", "clearly", "it's established that",
+                "research shows", "studies indicate", "experts say"
+            ]
+            
+            fact_count = sum(1 for indicator in fact_indicators if indicator in response_lower)
+            if fact_count > 0:
+                score -= (fact_count * 10.0)  # Penalty for introducing unsupported facts
+                issues.append(f"Introducing unsupported facts ({fact_count} instances)")
+        
+        # 11. ADAPTIVE LENGTH VALIDATION (NEW)
+        # Check response length against adaptive limits based on conversation state
+        # This replaces the truncation approach with retry-based quality control
+        if ADAPTIVE_ANTI_HALLUCINATION_ENABLED:
+            # Use simplified calculation based on conversation message count
+            # This is more reliable than trying to mock the conversation history format
+            conversation_message_count = len([msg for msg in conversation_context.split('\n') if ':' in msg]) if conversation_context else 0
+            
+            # Determine adaptive length limit based on conversation state using the same logic as the main system
+            if conversation_message_count <= CONVERSATION_HISTORY_COLD_LIMIT:
+                adaptive_max_length = COLD_START_MAX_RESPONSE_LENGTH
+                conversation_state = "COLD_START"
+            elif conversation_message_count <= CONVERSATION_HISTORY_WARM_LIMIT:
+                adaptive_max_length = WARM_CONVERSATION_MAX_RESPONSE_LENGTH
+                conversation_state = "WARM_CONVERSATION"
+            else:
+                adaptive_max_length = HOT_CONVERSATION_MAX_RESPONSE_LENGTH
+                conversation_state = "HOT_CONVERSATION"
+            
+            if len(response_text) > adaptive_max_length:
+                # Major penalty for exceeding adaptive length limits
+                length_penalty = min(30.0, (len(response_text) - adaptive_max_length) / 10.0)
+                score -= length_penalty
+                issues.append(f"Response too long ({len(response_text)} chars > {adaptive_max_length} limit for {conversation_state})")
+                print(f"🚨 Adaptive length validation: Response exceeds {conversation_state} limit ({len(response_text)} > {adaptive_max_length})")
+            else:
+                # Small bonus for appropriate length
+                score += 2.0
+                strengths.append(f"Appropriate length for {conversation_state} conversation")
+        
+        # Ensure score is within bounds (1-100 scale)
+        score = max(1.0, min(100.0, score))
+        
+        return {
+            "flow_score": score,
+            "issues": issues,
+            "strengths": strengths,
+            "conversation_awareness": awareness_score > 0,
+            "monologue_tendency": monologue_score > awareness_score
+        }
+        
+    except Exception as e:
+        print(f"⚠️ Error in conversation flow assessment: {e}")
+        return {
+            "flow_score": 3.0,
+            "issues": ["Assessment error"],
+            "strengths": [],
+            "conversation_awareness": False,
+            "monologue_tendency": False
+        }
+
+def _check_speaker_attribution(response_text, conversation_context, current_character):
+    """
+    Check if the response correctly attributes statements to the right speakers.
+    Returns a list of attribution issues found.
+    """
+    issues = []
+    
+    try:
+        response_lower = response_text.lower()
+        
+        # Parse conversation context to track who said what
+        speaker_statements = {}
+        context_lines = conversation_context.strip().split('\n')
+        
+        for line in context_lines:
+            if ':' in line:
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    speaker = parts[0].strip()
+                    statement = parts[1].strip().lower()
+                    
+                    if speaker not in speaker_statements:
+                        speaker_statements[speaker] = []
+                    speaker_statements[speaker].append(statement)
+        
+        # Character name mappings for detection
+        character_names = ['peter', 'brian', 'stewie', 'lois', 'meg', 'chris']
+        
+        # Look for patterns where the current character addresses someone about something they didn't say
+        for char_name in character_names:
+            if char_name == current_character.lower():
+                continue
+                
+            # Check for direct addressing patterns
+            addressing_patterns = [
+                f"{char_name}, you said",
+                f"{char_name}, you mentioned",
+                f"{char_name}, you were talking about",
+                f"as {char_name} said",
+                f"like {char_name} mentioned",
+                f"when {char_name} brought up",
+                f"since {char_name} was discussing",
+                f"now, {char_name}, if you're going to",
+                f"and as for you, {char_name}",
+                f"but {char_name}, you"
+            ]
+            
+            for pattern in addressing_patterns:
+                if pattern in response_lower:
+                    # Check if this character actually said something recently
+                    char_spoke_recently = False
+                    for speaker, statements in speaker_statements.items():
+                        if speaker.lower() == char_name and statements:
+                            char_spoke_recently = True
+                            break
+                    
+                    if not char_spoke_recently:
+                        issues.append(f"Incorrectly addressing {char_name.title()} about something they didn't say")
+                    
+                    # Additional check: look for topic misattribution
+                    # Extract key topics from the response after the addressing pattern
+                    pattern_index = response_lower.find(pattern)
+                    if pattern_index != -1:
+                        response_after_pattern = response_lower[pattern_index + len(pattern):]
+                        
+                        # Look for specific topics/concepts being discussed
+                        key_topics = _extract_key_topics(response_after_pattern)
+                        
+                        # Check if the addressed character actually mentioned these topics
+                        if char_name in speaker_statements:
+                            char_statements = ' '.join(speaker_statements[char_name])
+                            topic_matches = sum(1 for topic in key_topics if topic in char_statements)
+                            
+                            if key_topics and topic_matches == 0:
+                                # Find who actually mentioned these topics
+                                actual_speaker = None
+                                for speaker, statements in speaker_statements.items():
+                                    if speaker.lower() != char_name:
+                                        speaker_text = ' '.join(statements)
+                                        speaker_topic_matches = sum(1 for topic in key_topics if topic in speaker_text)
+                                        if speaker_topic_matches > 0:
+                                            actual_speaker = speaker
+                                            break
+                                
+                                if actual_speaker:
+                                    issues.append(f"Attributing {actual_speaker}'s statement about {', '.join(key_topics[:2])} to {char_name.title()}")
+        
+        # Check for general misattribution patterns
+        misattribution_patterns = [
+            "as you were saying about",
+            "when you mentioned",
+            "your point about",
+            "you brought up",
+            "you were discussing"
+        ]
+        
+        for pattern in misattribution_patterns:
+            if pattern in response_lower:
+                # This suggests the character is responding to someone specific
+                # We should verify this is contextually appropriate
+                pattern_index = response_lower.find(pattern)
+                if pattern_index != -1:
+                    # Look for the topic being referenced
+                    response_after_pattern = response_lower[pattern_index + len(pattern):]
+                    key_topics = _extract_key_topics(response_after_pattern)
+                    
+                    if key_topics:
+                        # Check if anyone actually mentioned these topics recently
+                        topic_mentioned = False
+                        for speaker, statements in speaker_statements.items():
+                            if speaker.lower() != current_character.lower():
+                                speaker_text = ' '.join(statements)
+                                if any(topic in speaker_text for topic in key_topics):
+                                    topic_mentioned = True
+                                    break
+                        
+                        if not topic_mentioned:
+                            issues.append(f"Referencing topics ({', '.join(key_topics[:2])}) that weren't mentioned in recent conversation")
+        
+    except Exception as e:
+        print(f"⚠️ Error in speaker attribution check: {e}")
+        issues.append("Attribution check error")
+    
+    return issues
+
+def _extract_key_topics(text):
+    """
+    Extract key topics/concepts from a text snippet.
+    Returns a list of important words/phrases.
+    """
+    # Remove common words and extract meaningful terms
+    common_words = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+        'by', 'from', 'up', 'about', 'into', 'through', 'during', 'before', 'after',
+        'above', 'below', 'between', 'among', 'is', 'are', 'was', 'were', 'be', 'been',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+        'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you',
+        'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your',
+        'his', 'her', 'its', 'our', 'their'
+    }
+    
+    # Split into words and filter
+    words = text.lower().split()
+    key_topics = []
+    
+    for word in words:
+        # Clean word of punctuation
+        clean_word = ''.join(c for c in word if c.isalpha())
+        
+        # Keep words that are:
+        # - Not common words
+        # - At least 4 characters long
+        # - Contain letters
+        if (clean_word not in common_words and 
+            len(clean_word) >= 4 and 
+            clean_word.isalpha()):
+            key_topics.append(clean_word)
+    
+    # Also look for specific important terms regardless of length
+    important_terms = [
+        'prince', 'machiavelli', 'book', 'novel', 'power', 'domination', 'plan',
+        'invention', 'scheme', 'chicken', 'fight', 'beer', 'tv', 'show', 'movie',
+        'politics', 'philosophy', 'science', 'art', 'culture', 'literature'
+    ]
+    
+    for term in important_terms:
+        if term in text.lower() and term not in key_topics:
+            key_topics.append(term)
+    
+    return key_topics[:5]  # Return top 5 topics
+
+def calculate_adaptive_quality_threshold(conversation_history, channel_id=None):
+    """
+    Calculate adaptive quality control threshold based on conversation history richness.
+    
+    The more conversation history available, the higher the quality threshold:
+    - Cold Start (0-3 messages): Lower threshold (50/100) - Be lenient for first interactions
+    - Warm Conversation (4-10 messages): Medium threshold (65/100) - Some context available
+    - Hot Conversation (11+ messages): High threshold (75/100) - Rich context, demand quality
+    
+    Args:
+        conversation_history: List of conversation messages
+        channel_id: Optional channel ID for channel-specific history lookup
+        
+    Returns:
+        float: Adaptive quality threshold (1-100 scale)
+    """
+    if not ADAPTIVE_QUALITY_CONTROL_ENABLED:
+        return QUALITY_CONTROL_MIN_RATING
+    
+    # Count meaningful conversation messages (exclude system messages)
+    meaningful_messages = 0
+    context_richness_score = 0
+    
+    for msg in conversation_history:
+        if isinstance(msg, (HumanMessage, AIMessage)):
+            meaningful_messages += 1
+            
+            # Add context richness scoring
+            content = getattr(msg, 'content', '')
+            if len(content) > 50:  # Substantial messages add more context value
+                context_richness_score += 2
+            elif len(content) > 20:  # Medium messages add some value
+                context_richness_score += 1
+            else:  # Short messages add minimal value
+                context_richness_score += 0.5
+    
+    # Check for additional conversation history in database if channel_id provided
+    if channel_id and conversations_collection is not None:
+        try:
+            # Look for recent conversation history in this channel (last 24 hours)
+            from datetime import datetime, timedelta
+            recent_cutoff = datetime.now() - timedelta(hours=24)
+            
+            recent_messages = list(conversations_collection.find({
+                "channel_id": str(channel_id),
+                "timestamp": {"$gte": recent_cutoff}
+            }).sort("timestamp", -1).limit(20))
+            
+            # Add database history to our count
+            for msg in recent_messages:
+                meaningful_messages += 1
+                content = msg.get('human_message', '') + msg.get('bot_response', '')
+                if len(content) > 50:
+                    context_richness_score += 1.5  # Database history is slightly less valuable
+                elif len(content) > 20:
+                    context_richness_score += 0.8
+                else:
+                    context_richness_score += 0.3
+                    
+        except Exception as e:
+            print(f"⚠️ Could not check database history for adaptive threshold: {e}")
+    
+    # Calculate adaptive threshold based on conversation richness
+    if meaningful_messages <= CONVERSATION_HISTORY_COLD_LIMIT:
+        # Cold start - be lenient
+        base_threshold = COLD_START_THRESHOLD
+        threshold_type = "COLD_START"
+    elif meaningful_messages <= CONVERSATION_HISTORY_WARM_LIMIT:
+        # Warm conversation - moderate expectations
+        base_threshold = WARM_CONVERSATION_THRESHOLD
+        threshold_type = "WARM_CONVERSATION"
+    else:
+        # Hot conversation - high expectations
+        base_threshold = HOT_CONVERSATION_THRESHOLD
+        threshold_type = "HOT_CONVERSATION"
+    
+    # Apply context richness modifier (±5 points based on message quality)
+    richness_modifier = min(5.0, max(-5.0, (context_richness_score - meaningful_messages) * 2))
+    adaptive_threshold = base_threshold + richness_modifier
+    
+    # Ensure threshold stays within reasonable bounds
+    adaptive_threshold = max(40.0, min(85.0, adaptive_threshold))
+    
+    print(f"🎯 Adaptive Quality Threshold: {adaptive_threshold:.1f}/100 ({threshold_type})")
+    print(f"   📊 Messages: {meaningful_messages}, Context Score: {context_richness_score:.1f}, Modifier: {richness_modifier:+.1f}")
+    
+    return adaptive_threshold
+
+def get_conversation_context_value(conversation_history):
+    """
+    Calculate the value/richness of conversation context for quality assessment.
+    
+    Returns:
+        dict: Context analysis with scores and insights
+    """
+    context_analysis = {
+        "total_messages": len(conversation_history),
+        "meaningful_messages": 0,
+        "average_length": 0,
+        "topic_continuity": 0,
+        "character_diversity": set(),
+        "context_value_score": 0
+    }
+    
+    total_length = 0
+    previous_topics = []
+    
+    for i, msg in enumerate(conversation_history):
+        if isinstance(msg, (HumanMessage, AIMessage)):
+            context_analysis["meaningful_messages"] += 1
+            content = getattr(msg, 'content', '')
+            total_length += len(content)
+            
+            # Track character diversity
+            if isinstance(msg, AIMessage):
+                speaker = getattr(msg, 'name', 'Unknown')
+                context_analysis["character_diversity"].add(speaker)
+            
+            # Simple topic continuity check (look for connecting words)
+            if i > 0 and any(word in content.lower() for word in 
+                           ['that', 'this', 'it', 'also', 'and', 'but', 'however', 'speaking of']):
+                context_analysis["topic_continuity"] += 1
+    
+    if context_analysis["meaningful_messages"] > 0:
+        context_analysis["average_length"] = total_length / context_analysis["meaningful_messages"]
+    
+    # Calculate overall context value score
+    base_score = context_analysis["meaningful_messages"] * 2
+    length_bonus = min(10, context_analysis["average_length"] / 10)  # Bonus for substantial messages
+    continuity_bonus = context_analysis["topic_continuity"] * 1.5
+    diversity_bonus = len(context_analysis["character_diversity"]) * 2
+    
+    context_analysis["context_value_score"] = base_score + length_bonus + continuity_bonus + diversity_bonus
+    context_analysis["character_diversity"] = list(context_analysis["character_diversity"])
+    
+    return context_analysis
+
+def calculate_character_aware_anti_hallucination_settings(character_name, conversation_state, base_settings):
+    """
+    Adjust anti-hallucination settings based on character personality and conversation state.
+    
+    Different characters have different natural response patterns:
+    - Peter: Tends to ramble, needs stricter length controls
+    - Brian: Verbose and intellectual, moderate controls
+    - Stewie: Articulate but concise, lenient controls
+    
+    Args:
+        character_name: The character responding
+        conversation_state: COLD_START, WARM_CONVERSATION, or HOT_CONVERSATION
+        base_settings: Base anti-hallucination settings for the conversation state
+        
+    Returns:
+        dict: Character-adjusted anti-hallucination settings
+    """
+    character_modifiers = {
+        "Peter": {
+            "length_multiplier": 0.7,  # Peter needs shorter responses to prevent rambling
+            "risk_multiplier": 1.2,    # Higher hallucination risk due to his nature
+            "strictness_multiplier": 1.3  # Need stricter controls for Peter
+        },
+        "Brian": {
+            "length_multiplier": 1.0,  # Brian should be conversational, not verbose
+            "risk_multiplier": 0.8,    # Lower risk - he's articulate and self-aware
+            "strictness_multiplier": 0.9  # More lenient to allow natural sarcasm and self-deprecation
+        },
+        "Stewie": {
+            "length_multiplier": 0.9,  # Stewie should be concise but not overly restricted
+            "risk_multiplier": 0.6,    # Lowest risk - he's precise and sophisticated
+            "strictness_multiplier": 0.7  # Most lenient to allow his natural wit and condescension
+        }
+    }
+    
+    # Get character-specific modifiers, default to Brian's settings
+    modifiers = character_modifiers.get(character_name, character_modifiers["Brian"])
+    
+    # Apply character modifiers to base settings
+    adjusted_settings = {
+        "max_response_length": int(base_settings["max_response_length"] * modifiers["length_multiplier"]),
+        "hallucination_risk": min(1.0, base_settings["hallucination_risk"] * modifiers["risk_multiplier"]),
+        "strictness_multiplier": base_settings["strictness_multiplier"] * modifiers["strictness_multiplier"],
+        "character_modifier_applied": character_name,
+        "base_length": base_settings["max_response_length"],
+        "length_adjustment": modifiers["length_multiplier"]
+    }
+    
+    # Ensure values stay within reasonable bounds
+    adjusted_settings["max_response_length"] = max(80, min(500, adjusted_settings["max_response_length"]))
+    adjusted_settings["hallucination_risk"] = max(0.1, min(1.0, adjusted_settings["hallucination_risk"]))
+    adjusted_settings["strictness_multiplier"] = max(0.6, min(2.5, adjusted_settings["strictness_multiplier"]))
+    
+    print(f"🎭 Character-Aware Anti-Hallucination for {character_name}:")
+    print(f"   📏 Length: {base_settings['max_response_length']} → {adjusted_settings['max_response_length']} chars ({modifiers['length_multiplier']:.1f}x)")
+    print(f"   🚨 Risk: {base_settings['hallucination_risk']:.1%} → {adjusted_settings['hallucination_risk']:.1%} ({modifiers['risk_multiplier']:.1f}x)")
+    print(f"   🔧 Strictness: {base_settings['strictness_multiplier']:.1f} → {adjusted_settings['strictness_multiplier']:.1f}x ({modifiers['strictness_multiplier']:.1f}x)")
+    
+    return adjusted_settings
+
+def calculate_adaptive_context_weights(conversation_history, channel_id=None, character_name=None):
+    """
+    Calculate adaptive context weights, lengths, and anti-hallucination measures based on conversation history richness.
+    
+    As conversation history grows and becomes more valuable, we should:
+    1. Rely more on conversation history and less on external RAG context (weighting)
+    2. Include more conversation messages and fewer RAG characters (length scaling)
+    3. Apply stricter anti-hallucination measures to prevent over-elaboration (hallucination control)
+    
+    This creates a natural progression:
+    - Cold Start: Few conversation messages (2), more RAG context (400 chars), lenient anti-hallucination
+    - Warm Conversation: Moderate conversation messages (4), moderate RAG context (250 chars), moderate anti-hallucination
+    - Hot Conversation: Rich conversation messages (6), minimal RAG context (150 chars), strict anti-hallucination
+    
+    Args:
+        conversation_history: List of conversation messages
+        channel_id: Optional channel ID for channel-specific history lookup
+        
+    Returns:
+        dict: Context weights, lengths, anti-hallucination measures, and analysis
+    """
+    if not ADAPTIVE_CONTEXT_WEIGHTING_ENABLED:
+        return {
+            "conversation_weight": CONVERSATION_FOCUS_WEIGHT,
+            "rag_weight": 1.0 - CONVERSATION_FOCUS_WEIGHT,
+            "weighting_type": "STATIC",
+            "conversation_richness": 0,
+            "conversation_messages": 3,  # Default static value
+            "rag_context_length": MAX_CONTEXT_INJECTION,  # Default static value
+            "max_response_length": 250,  # Default static value,
+            "hallucination_risk": 0.5,  # Default static value,
+            "strictness_multiplier": 1.0  # Default static value
+        }
+    
+    # Get conversation context analysis
+    context_analysis = get_conversation_context_value(conversation_history)
+    meaningful_messages = context_analysis["meaningful_messages"]
+    context_value_score = context_analysis["context_value_score"]
+    
+    # Check for additional conversation history in database if channel_id provided
+    database_messages = 0
+    if channel_id and conversations_collection is not None:
+        try:
+            from datetime import datetime, timedelta
+            recent_cutoff = datetime.now() - timedelta(hours=24)
+            
+            recent_messages = list(conversations_collection.find({
+                "channel_id": str(channel_id),
+                "timestamp": {"$gte": recent_cutoff}
+            }).sort("timestamp", -1).limit(20))
+            
+            database_messages = len(recent_messages)
+            
+        except Exception as e:
+            print(f"⚠️ Could not check database history for adaptive context weighting: {e}")
+    
+    total_conversation_context = meaningful_messages + (database_messages * 0.5)  # Database history counts for less
+    
+    # Determine context weighting, length tier, and anti-hallucination measures
+    if total_conversation_context <= CONVERSATION_HISTORY_COLD_LIMIT:
+        # Cold start - need more external context, fewer conversation messages, lenient anti-hallucination
+        base_conversation_weight = COLD_START_CONVERSATION_WEIGHT
+        base_conversation_messages = COLD_START_CONVERSATION_MESSAGES
+        base_rag_context_length = COLD_START_RAG_CONTEXT_LENGTH
+        base_max_response_length = COLD_START_MAX_RESPONSE_LENGTH
+        base_hallucination_risk = COLD_START_HALLUCINATION_RISK
+        base_strictness_multiplier = COLD_START_STRICTNESS_MULTIPLIER
+        weighting_type = "COLD_START"
+    elif total_conversation_context <= CONVERSATION_HISTORY_WARM_LIMIT:
+        # Warm conversation - balanced approach with moderate anti-hallucination
+        base_conversation_weight = WARM_CONVERSATION_WEIGHT
+        base_conversation_messages = WARM_CONVERSATION_MESSAGES
+        base_rag_context_length = WARM_CONVERSATION_RAG_CONTEXT_LENGTH
+        base_max_response_length = WARM_CONVERSATION_MAX_RESPONSE_LENGTH
+        base_hallucination_risk = WARM_CONVERSATION_HALLUCINATION_RISK
+        base_strictness_multiplier = WARM_CONVERSATION_STRICTNESS_MULTIPLIER
+        weighting_type = "WARM_CONVERSATION"
+    else:
+        # Hot conversation - conversation history is very valuable, strict anti-hallucination needed
+        base_conversation_weight = HOT_CONVERSATION_WEIGHT
+        base_conversation_messages = HOT_CONVERSATION_MESSAGES
+        base_rag_context_length = HOT_CONVERSATION_RAG_CONTEXT_LENGTH
+        base_max_response_length = HOT_CONVERSATION_MAX_RESPONSE_LENGTH
+        base_hallucination_risk = HOT_CONVERSATION_HALLUCINATION_RISK
+        base_strictness_multiplier = HOT_CONVERSATION_STRICTNESS_MULTIPLIER
+        weighting_type = "HOT_CONVERSATION"
+    
+    # Apply context richness modifier (±0.05 for weight, ±1 message, ±50 chars for lengths, ±0.1 for risk)
+    if context_value_score > 0:
+        quality_ratio = min(2.0, context_value_score / max(1, meaningful_messages))  # Quality per message
+        richness_modifier = (quality_ratio - 1.0) * 0.05  # ±0.05 max adjustment for weight
+        
+        # Length modifiers based on conversation quality
+        conversation_length_modifier = int((quality_ratio - 1.0) * 1.0)  # ±1 message
+        rag_length_modifier = int((1.0 - quality_ratio) * 50)  # Inverse relationship: better conversation = less RAG
+        response_length_modifier = int((1.0 - quality_ratio) * 25)  # Better conversation = shorter responses
+        
+        # Anti-hallucination modifiers - higher quality conversations need stricter measures
+        hallucination_risk_modifier = (quality_ratio - 1.0) * 0.1  # ±0.1 risk adjustment
+        strictness_modifier = (quality_ratio - 1.0) * 0.2  # ±0.2 strictness adjustment
+    else:
+        richness_modifier = 0.0
+        conversation_length_modifier = 0
+        rag_length_modifier = 0
+        response_length_modifier = 0
+        hallucination_risk_modifier = 0.0
+        strictness_modifier = 0.0
+    
+    # Apply modifiers
+    adaptive_conversation_weight = base_conversation_weight + richness_modifier
+    adaptive_conversation_messages = base_conversation_messages + conversation_length_modifier
+    adaptive_rag_context_length = base_rag_context_length + rag_length_modifier
+    adaptive_max_response_length = base_max_response_length + response_length_modifier
+    adaptive_hallucination_risk = base_hallucination_risk + hallucination_risk_modifier
+    adaptive_strictness_multiplier = base_strictness_multiplier + strictness_modifier
+    
+    # Ensure values stay within reasonable bounds
+    adaptive_conversation_weight = max(0.4, min(0.9, adaptive_conversation_weight))
+    adaptive_conversation_messages = max(1, min(8, adaptive_conversation_messages))  # 1-8 messages
+    adaptive_rag_context_length = max(50, min(500, adaptive_rag_context_length))  # 50-500 chars
+    adaptive_max_response_length = max(100, min(400, adaptive_max_response_length))  # 100-400 chars
+    adaptive_hallucination_risk = max(0.1, min(1.0, adaptive_hallucination_risk))  # 10-100% risk
+    adaptive_strictness_multiplier = max(0.8, min(2.0, adaptive_strictness_multiplier))  # 0.8x-2.0x strictness
+    
+    adaptive_rag_weight = 1.0 - adaptive_conversation_weight
+    
+    # Apply character-aware anti-hallucination adjustments if character_name provided
+    if character_name and ADAPTIVE_ANTI_HALLUCINATION_ENABLED:
+        base_anti_hallucination = {
+            "max_response_length": adaptive_max_response_length,
+            "hallucination_risk": adaptive_hallucination_risk,
+            "strictness_multiplier": adaptive_strictness_multiplier
+        }
+        
+        character_adjusted = calculate_character_aware_anti_hallucination_settings(
+            character_name, weighting_type, base_anti_hallucination
+        )
+        
+        # Update with character-adjusted values
+        adaptive_max_response_length = character_adjusted["max_response_length"]
+        adaptive_hallucination_risk = character_adjusted["hallucination_risk"]
+        adaptive_strictness_multiplier = character_adjusted["strictness_multiplier"]
+    
+    print(f"🎚️ Adaptive Context Weights: {adaptive_conversation_weight:.1%} conversation, {adaptive_rag_weight:.1%} RAG ({weighting_type})")
+    print(f"📏 Adaptive Context Lengths: {adaptive_conversation_messages} conv messages, {adaptive_rag_context_length} RAG chars")
+    print(f"🚨 Adaptive Anti-Hallucination: {adaptive_max_response_length} max chars, {adaptive_hallucination_risk:.1%} risk, {adaptive_strictness_multiplier:.1f}x strictness")
+    print(f"   📊 Total Context: {total_conversation_context:.1f} messages, Quality Score: {context_value_score:.1f}")
+    print(f"   🔧 Modifiers: Weight {richness_modifier:+.3f}, Conv {conversation_length_modifier:+d} msgs, RAG {rag_length_modifier:+d} chars")
+    
+    return {
+        "conversation_weight": adaptive_conversation_weight,
+        "rag_weight": adaptive_rag_weight,
+        "weighting_type": weighting_type,
+        "conversation_richness": total_conversation_context,
+        "context_value_score": context_value_score,
+        "richness_modifier": richness_modifier,
+        "database_messages": database_messages,
+        "conversation_messages": adaptive_conversation_messages,
+        "rag_context_length": adaptive_rag_context_length,
+        "conversation_length_modifier": conversation_length_modifier,
+        "rag_length_modifier": rag_length_modifier,
+        "max_response_length": adaptive_max_response_length,
+        "hallucination_risk": adaptive_hallucination_risk,
+        "strictness_multiplier": adaptive_strictness_multiplier,
+        "response_length_modifier": response_length_modifier,
+        "hallucination_risk_modifier": hallucination_risk_modifier,
+        "strictness_modifier": strictness_modifier
+    }
 
 if __name__ == '__main__':
     # Try to connect to MongoDB with retries
