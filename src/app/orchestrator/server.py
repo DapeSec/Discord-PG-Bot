@@ -17,6 +17,15 @@ from langchain.schema import HumanMessage, AIMessage
 import uuid
 import hashlib
 
+# Import cache utilities for KeyDB integration
+try:
+    from src.app.utils.cache import cache_recent_response, get_recent_responses, get_cache
+    CACHE_AVAILABLE = True
+    print("✅ KeyDB cache utilities imported successfully")
+except ImportError as e:
+    print(f"⚠️ Cache utilities not available: {e}. Using fallback in-memory cache.")
+    CACHE_AVAILABLE = False
+
 print("Starting imports...")
 
 # Dead Letter Queue Configuration
@@ -713,6 +722,8 @@ else:
     else:
         print("CRITICAL: mongo_client is None even after connect_to_mongodb reported success. PromptFineTuner NOT initialized.")
 
+# Note: Organic coordinator and background threads will be initialized after class definitions
+
 # --- Orchestrator Configuration ---
 ORCHESTRATOR_PORT = 5003
 # Natural conversation flow - no hard limits, let conversations be organic
@@ -792,17 +803,9 @@ except Exception as e:
     print("Please ensure Ollama is running and accessible at the configured URL.")
     shared_llm = None
 
-# --- Centralized LLM for all character responses ---
-try:
-    character_llm = Ollama(model=ollama_model, base_url=ollama_base_url)
-    print(f"Centralized Character LLM initialized successfully: {ollama_model} at {ollama_base_url}")
-except Exception as e:
-    print(f"Error initializing Character LLM: {e}")
-    print(f"Please ensure Ollama is running and the '{ollama_model}' model is available.")
-    character_llm = None
+# Note: Using only shared_llm for all operations to reduce memory usage and connection overhead
 
 # Character-specific prompts - Updated for Mistral Nemo
-# Note: Using shared_llm for all operations to reduce memory usage and connection overhead
 CHARACTER_PROMPTS = {
     "Peter": """You are Peter Justin Griffin from Family Guy, age 43, living at 31 Spooner Street in Quahog, Rhode Island.
 
@@ -3810,10 +3813,12 @@ class OrganicConversationCoordinator:
     """
     
     def __init__(self):
-        self.last_organic_attempt = None
+        # Initialize with current time to prevent immediate organic conversations on cold start
+        self.last_organic_attempt = datetime.now()
         self.last_follow_up_attempt = None
         self.weekly_crawl_check_interval = 24 * 60 * 60  # Check for weekly crawl every 24 hours
         self.last_crawl_check = None
+        print(f"🌱 Organic Conversation Coordinator: Initialized at {self.last_organic_attempt.strftime('%H:%M:%S')} (cold start protection active)")
     
     def should_start_follow_up_conversation(self, channel_id):
         """
@@ -3880,23 +3885,34 @@ class OrganicConversationCoordinator:
         try:
             now = datetime.now()
             
-            # Get recent conversation activity
-            recent_cutoff = now - timedelta(minutes=CONVERSATION_SILENCE_THRESHOLD_MINUTES)
-            recent_messages = list(conversations_collection.find({
-                "channel_id": channel_id,
-                "timestamp": {"$gte": recent_cutoff}
-            }).sort("timestamp", -1))
-            
-            # Don't start if there's been recent activity
-            if recent_messages:
-                print(f"🤖 Organic Coordinator: Recent activity detected, no need for organic conversation")
-                return False
-            
-            # Check minimum time between organic attempts
+            # Check minimum time between organic attempts first
             if self.last_organic_attempt:
-                time_since_last = (now - self.last_organic_attempt).total_seconds() / 60
-                if time_since_last < MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS:
-                    print(f"🤖 Organic Coordinator: Too soon since last attempt ({time_since_last:.1f} min < {MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS} min)")
+                time_since_last_organic = (now - self.last_organic_attempt).total_seconds() / 60
+                if time_since_last_organic < MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS:
+                    print(f"🤖 Organic Coordinator: Too soon since last organic attempt ({time_since_last_organic:.1f} min < {MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS} min)")
+                    return False
+            
+            # Check if enough time has passed since the last message (user or bot)
+            last_message = conversations_collection.find_one(
+                {"channel_id": channel_id},
+                sort=[("timestamp", -1)]
+            )
+            
+            silence_duration = 0
+            if last_message:
+                silence_duration = (now - last_message["timestamp"]).total_seconds() / 60
+                if silence_duration < CONVERSATION_SILENCE_THRESHOLD_MINUTES:
+                    print(f"🤖 Organic Coordinator: Only {silence_duration:.1f} minutes since last message (need {CONVERSATION_SILENCE_THRESHOLD_MINUTES} min)")
+                    return False
+            else:
+                # No messages found at all (cold start) - treat as if system just started
+                # Use the coordinator initialization time as the reference point
+                silence_duration = (now - self.last_organic_attempt).total_seconds() / 60
+                print(f"🤖 Organic Coordinator: No messages found in channel (cold start), using coordinator init time as reference")
+                
+                # Even on cold start, respect the silence threshold
+                if silence_duration < CONVERSATION_SILENCE_THRESHOLD_MINUTES:
+                    print(f"🤖 Organic Coordinator: Cold start silence duration {silence_duration:.1f} min < {CONVERSATION_SILENCE_THRESHOLD_MINUTES} min threshold")
                     return False
             
             # Get longer conversation history for context analysis
@@ -3911,18 +3927,9 @@ class OrganicConversationCoordinator:
                 print(f"🤖 Organic Coordinator: Conversation analysis suggests organic conversation would be beneficial")
                 return True
             
-            # If it's been silent for a while, consider starting something
-            if not recent_messages:
-                last_message = conversations_collection.find_one(
-                    {"channel_id": channel_id},
-                    sort=[("timestamp", -1)]
-                )
-                
-                if last_message:
-                    silence_duration = (now - last_message["timestamp"]).total_seconds() / 60
-                    if silence_duration > CONVERSATION_SILENCE_THRESHOLD_MINUTES:
-                        print(f"🤖 Organic Coordinator: {silence_duration:.1f} minutes of silence, considering organic conversation")
-                        return True
+            # If we've reached this point, enough time has passed since the last message
+            print(f"🤖 Organic Coordinator: {silence_duration:.1f} minutes of silence detected, starting organic conversation")
+            return True
                 
             return False
             
@@ -4292,8 +4299,7 @@ class OrganicConversationCoordinator:
     
     # Removed check_weekly_crawl(self) method from OrganicConversationCoordinator
 
-# Global organic coordinator instance
-organic_coordinator = OrganicConversationCoordinator()
+# Note: organic_coordinator is now initialized earlier in the module for gunicorn compatibility
 
 def organic_conversation_monitor():
     """
@@ -4308,9 +4314,15 @@ def organic_conversation_monitor():
     print(f"   🕐 Min time between follow-ups: {MIN_TIME_BETWEEN_FOLLOW_UPS}s")
     
     check_interval = 30  # Check every 30 seconds for more responsive follow-ups
+    check_count = 0
     
     while True:
         try: # Try for the main loop operations
+            check_count += 1
+            import time
+            current_time = time.strftime("%H:%M:%S")
+            print(f"🔍 Monitor Check #{check_count} at {current_time}: Scanning for conversation opportunities...")
+            
             if DEFAULT_DISCORD_CHANNEL_ID:
                 # First check for follow-up opportunities (more frequent and aggressive)
                 if ENABLE_FOLLOW_UP_CONVERSATIONS and organic_coordinator.should_start_follow_up_conversation(DEFAULT_DISCORD_CHANNEL_ID):
@@ -4330,10 +4342,7 @@ def organic_conversation_monitor():
                     else:
                         print(f"🌱 Monitor: Failed to start organic conversation")
                 else:
-                    # Only log this occasionally to avoid spam
-                    import time
-                    if int(time.time()) % 300 == 0:  # Every 5 minutes
-                        print(f"🌱 Monitor: No conversation opportunities at this time")
+                    print(f"   ⏸️ No conversation opportunities found this check")
             else:
                 print(f"ERROR: DEFAULT_DISCORD_CHANNEL_ID not configured, cannot monitor for conversations")
             
@@ -4344,6 +4353,34 @@ def organic_conversation_monitor():
         # Wait before next check - ensure this is outside the try-except for the main operations
         # so that the loop continues even if an error occurs in the try block.
         time.sleep(check_interval)
+
+# Initialize organic coordinator and start background threads (for gunicorn compatibility)
+# This must be after the class definition
+organic_coordinator = OrganicConversationCoordinator()
+
+def start_background_threads():
+    """Start background threads for organic conversation monitoring and retry worker."""
+    import time
+    
+    # Small delay to ensure MongoDB connection is established
+    time.sleep(2)
+    
+    # Start the retry worker thread
+    threading.Thread(target=retry_worker, daemon=True).start()
+    print("Dead letter queue retry worker thread started.")
+    
+    # Start the organic conversation monitor thread
+    threading.Thread(target=organic_conversation_monitor, daemon=True).start()
+    print("Organic conversation monitor thread started.")
+    
+    # Log follow-up conversation configuration
+    print(f"🔄 Follow-up Conversations: {'Enabled' if ENABLE_FOLLOW_UP_CONVERSATIONS else 'Disabled'}")
+    if ENABLE_FOLLOW_UP_CONVERSATIONS:
+        print(f"   ⏱️ Follow-up delay: {FOLLOW_UP_DELAY_SECONDS}s")
+        print(f"   🕐 Min time between follow-ups: {MIN_TIME_BETWEEN_FOLLOW_UPS}s")
+
+# Start background threads in a separate thread to avoid blocking module load
+threading.Thread(target=start_background_threads, daemon=True).start()
 
 def validate_character_response(character_name, response_text):
     """
@@ -4403,17 +4440,17 @@ def validate_character_response(character_name, response_text):
             f'{character_lower} should',
             f'{character_lower} could',
             f'{character_lower} might',
-            f'{character_lower}\'s',  # Possessive forms
+            f'{character_lower}\'s latest',  # Only block SELF possessive with specific context
+            f'{character_lower}\'s invention',
+            f'{character_lower}\'s plan',
+            f'{character_lower}\'s idea',
+            f'{character_lower}\'s approach',
+            f'{character_lower}\'s strategy',
+            f'{character_lower}\'s method',
             f'to {character_lower}',
             f'for {character_lower}',
             f'with {character_lower}',
-            f'about {character_lower}',
-            # Special cases for specific characters
-            f'stewie\'s latest',
-            f'stewie\'s invention',
-            f'stewie\'s plan',
-            f'peter\'s',
-            f'brian\'s'
+            f'about {character_lower}'
         ]
         
         for pattern in third_person_self_patterns:
@@ -4638,6 +4675,8 @@ def validate_character_response(character_name, response_text):
             f'{character_name.lower()}\'s approach',
             f'{character_name.lower()}\'s strategy',
             f'{character_name.lower()}\'s method',
+            f'{character_name.lower()}\'s response',
+            f'{character_name.lower()}\'s comment',
             f'{character_name.lower()} griffin',  # "Stewie Griffin" self-reference
         ]
         
@@ -4706,6 +4745,7 @@ def _assess_conversation_flow_quality(character_name, response_text, conversatio
             f'{character_lower} decides', f'{character_lower} realizes', f'{character_lower} notices',
             f'{character_lower}\'s latest', f'{character_lower}\'s invention', f'{character_lower}\'s plan',
             f'{character_lower}\'s idea', f'{character_lower}\'s approach', f'{character_lower}\'s strategy',
+            f'{character_lower}\'s method', f'{character_lower}\'s response', f'{character_lower}\'s comment',
             f'{character_lower} griffin',  # "Stewie Griffin" self-reference
             f'@{character_lower}',  # "@stewie" self-mention
             f'@{character_lower} griffin',  # "@stewie griffin" self-mention
@@ -5572,21 +5612,12 @@ if __name__ == '__main__':
             print(f"⚠️ Warning: Could not initialize fine-tuning system: {e}")
             prompt_fine_tuner = None
         
-        # Start the retry worker thread
-        threading.Thread(target=retry_worker, daemon=True).start()
-        print("Dead letter queue retry worker thread started.")
+        # Note: Background threads (retry worker, organic monitor) are now started at module load time
+        # This ensures they work with both direct execution and gunicorn deployment
         
         threading.Thread(target=run_flask_app, daemon=True).start()
         print("Orchestrator server thread started. Waiting for requests...")
-
-        threading.Thread(target=organic_conversation_monitor, daemon=True).start()
-        print("Organic conversation monitor thread started.")
-        
-        # Log follow-up conversation configuration
-        print(f"🔄 Follow-up Conversations: {'Enabled' if ENABLE_FOLLOW_UP_CONVERSATIONS else 'Disabled'}")
-        if ENABLE_FOLLOW_UP_CONVERSATIONS:
-            print(f"   ⏱️ Follow-up delay: {FOLLOW_UP_DELAY_SECONDS}s")
-            print(f"   🕐 Min time between follow-ups: {MIN_TIME_BETWEEN_FOLLOW_UPS}s")
+        print("Note: Background threads (retry worker, organic monitor) already started at module load time")
 
         while True:
             time.sleep(1)

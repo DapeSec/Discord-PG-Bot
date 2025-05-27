@@ -6,11 +6,21 @@ from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import Chroma
 from pymongo import MongoClient # For potential status checks, not core retrieval
 from datetime import datetime
+import hashlib
 
 # Load environment variables
 load_dotenv()
 
 SERVICE_NAME = "RAGRetrieverService"
+
+# KeyDB Cache Integration for query caching
+try:
+    from src.app.utils.cache import get_cache
+    CACHE_AVAILABLE = True
+    print(f"{SERVICE_NAME} - ✅ KeyDB cache utilities imported successfully")
+except ImportError as e:
+    print(f"{SERVICE_NAME} - ⚠️ Cache utilities not available: {e}. No query caching.")
+    CACHE_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -114,7 +124,7 @@ def initialize_vector_store():
 
 @app.route('/retrieve', methods=['POST'])
 def retrieve_context_api():
-    """API endpoint to retrieve context from the vector store."""
+    """API endpoint to retrieve context from the vector store with caching."""
     # Ensure vector store is initialized before each request
     current_vectorstore = initialize_vector_store()
     
@@ -138,38 +148,69 @@ def retrieve_context_api():
 
     print(f"{SERVICE_NAME} - Received retrieval request for query: '{query[:50]}...' (num_results: {num_results})")
 
+    # Check cache first if available
+    cache_key = None
+    if CACHE_AVAILABLE:
+        try:
+            # Create cache key from query and parameters
+            query_hash = hashlib.md5(f"{query}:{num_results}".encode()).hexdigest()
+            cache_key = f"query:{query_hash}"
+            
+            cache = get_cache("rag")
+            cached_result = cache.get(cache_key)
+            
+            if cached_result:
+                print(f"{SERVICE_NAME} - 🎯 Cache hit for query: '{query[:50]}...'")
+                return jsonify(cached_result), 200
+                
+        except Exception as e:
+            print(f"{SERVICE_NAME} - ⚠️ Cache check failed: {e}")
+
     try:
         if current_vectorstore._collection.count() == 0:
             print(f"{SERVICE_NAME} - Warning: Chroma DB is empty. Returning no context for query: '{query[:50]}...'")
-            return jsonify({"query": query, "context": "", "documents_found": 0, "message": "Vector store is empty."}), 200
-
-        docs_with_scores = current_vectorstore.similarity_search_with_score(query, k=num_results)
-        
-        context_parts = []
-        retrieved_documents_info = []
-
-        for doc, score in docs_with_scores:
-            context_parts.append(doc.page_content)
-            doc_info = {
-                "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
-                "metadata": doc.metadata,
-                "score": float(score) # Ensure score is JSON serializable
-            }
-            retrieved_documents_info.append(doc_info)
-            
-        context = "\n\n".join(context_parts)
-        
-        if context:
-            print(f"{SERVICE_NAME} - Retrieved {len(docs_with_scores)} documents for query '{query[:50]}...'")
+            result = {"query": query, "context": "", "documents_found": 0, "message": "Vector store is empty."}
         else:
-            print(f"{SERVICE_NAME} - No relevant context found for query: '{query[:50]}...'")
+            docs_with_scores = current_vectorstore.similarity_search_with_score(query, k=num_results)
+            
+            context_parts = []
+            retrieved_documents_info = []
+
+            for doc, score in docs_with_scores:
+                context_parts.append(doc.page_content)
+                doc_info = {
+                    "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
+                    "metadata": doc.metadata,
+                    "score": float(score) # Ensure score is JSON serializable
+                }
+                retrieved_documents_info.append(doc_info)
+                
+            context = "\n\n".join(context_parts)
+            
+            result = {
+                "query": query,
+                "context": context,
+                "retrieved_documents": retrieved_documents_info,
+                "documents_found": len(docs_with_scores),
+                "cached": False
+            }
+            
+            if context:
+                print(f"{SERVICE_NAME} - Retrieved {len(docs_with_scores)} documents for query '{query[:50]}...'")
+            else:
+                print(f"{SERVICE_NAME} - No relevant context found for query: '{query[:50]}...'")
+
+        # Cache the result if caching is available
+        if CACHE_AVAILABLE and cache_key:
+            try:
+                cache = get_cache("rag")
+                result["cached"] = False  # Mark as fresh result
+                cache.set(cache_key, result, ttl=3600)  # Cache for 1 hour
+                print(f"{SERVICE_NAME} - 💾 Cached result for query: '{query[:50]}...'")
+            except Exception as e:
+                print(f"{SERVICE_NAME} - ⚠️ Failed to cache result: {e}")
         
-        return jsonify({
-            "query": query,
-            "context": context,
-            "retrieved_documents": retrieved_documents_info,
-            "documents_found": len(docs_with_scores)
-        }), 200
+        return jsonify(result), 200
 
     except Exception as e:
         print(f"{SERVICE_NAME} - ERROR: Error during context retrieval for query '{query[:50]}...': {e}")
@@ -178,55 +219,55 @@ def retrieve_context_api():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint for the RAG Retriever service."""
-    db_status = "unknown"
-    vectorstore_status = "unknown"
-    vectorstore_doc_count = 0
-    embeddings_status = "unknown"
-
-    # Check MongoDB connection (non-critical for core functionality)
+    """Health check endpoint for Docker and load balancers."""
     try:
-        get_mongo_connection()
-        if mongo_client and mongo_client.admin.command('ping'):
-            db_status = "connected"
+        # Check vector store status
+        current_vectorstore = initialize_vector_store()
+        vectorstore_status = "initialized" if current_vectorstore else "not_initialized"
+        
+        # Check document count
+        document_count = 0
+        if current_vectorstore:
+            try:
+                document_count = current_vectorstore._collection.count()
+            except Exception as e:
+                print(f"{SERVICE_NAME} - Error getting document count: {e}")
+        
+        # Check cache status
+        cache_status = "not_available"
+        if CACHE_AVAILABLE:
+            try:
+                cache = get_cache("rag")
+                test_result = cache.set("health_test", {"timestamp": datetime.now().isoformat()}, ttl=60)
+                cache_status = "connected" if test_result else "connection_failed"
+            except Exception as e:
+                cache_status = f"error: {str(e)}"
+        
+        # Determine overall status
+        status = "healthy" if current_vectorstore and document_count > 0 else "degraded"
+        
+        return jsonify({
+            "status": status,
+            "service": SERVICE_NAME,
+            "timestamp": datetime.now().isoformat(),
+            "vectorstore": {
+                "status": vectorstore_status,
+                "document_count": document_count,
+                "embeddings_model": EMBEDDINGS_MODEL_NAME
+            },
+            "cache": {
+                "status": cache_status,
+                "available": CACHE_AVAILABLE
+            }
+        }), 200 if status == "healthy" else 503
+        
     except Exception as e:
-        db_status = f"mongodb_error: {str(e)}"
-
-    # Check embeddings model (critical for functionality)
-    try:
-        get_embeddings_model()
-        embeddings_status = "loaded"
-    except Exception as e:
-        embeddings_status = f"not_loaded: {str(e)}"
-
-    # Check vector store (can be empty but should be initializable)
-    try:
-        if embeddings_status == "loaded":
-            initialize_vector_store()
-            if vectorstore is not None:
-                vectorstore_doc_count = vectorstore._collection.count()
-                vectorstore_status = "loaded_and_queriable" if vectorstore_doc_count > 0 else "loaded_but_empty"
-            else:
-                vectorstore_status = "failed_to_initialize"
-        else:
-            vectorstore_status = "cannot_initialize_without_embeddings"
-    except Exception as e:
-        vectorstore_status = f"vectorstore_error: {str(e)}"
-
-    # Service is healthy if embeddings can be loaded (vector store can be empty)
-    overall_healthy = embeddings_status == "loaded"
-
-    return jsonify({
-        "service_name": SERVICE_NAME,
-        "status": "healthy" if overall_healthy else "unhealthy",
-        "timestamp": datetime.now().isoformat(),
-        "dependencies": {
-            "mongodb_status_check": db_status,
-            "embeddings_model": embeddings_status,
-            "vector_store_status": vectorstore_status,
-            "vector_store_documents": vectorstore_doc_count
-        }
-    }), 200 if overall_healthy else 503
+        return jsonify({
+            "status": "unhealthy",
+            "service": SERVICE_NAME,
+            "reason": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 503
 
 
 if __name__ == '__main__':

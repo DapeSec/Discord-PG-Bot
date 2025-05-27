@@ -386,7 +386,7 @@ If issues arise, rollback by:
 ### 🚀 **Planned Improvements**
 
 1. **Advanced Caching**:
-   - Redis cache for frequent queries
+   - KeyDB cache for frequent queries
    - Intelligent cache invalidation
 
 2. **Enhanced Monitoring**:

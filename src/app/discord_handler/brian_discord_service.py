@@ -13,6 +13,25 @@ load_dotenv()
 
 # --- Brian Discord Handler Configuration ---
 SERVICE_NAME = "BrianDiscordHandler"
+
+# KeyDB Cache Integration
+try:
+    # Try multiple import paths for Docker compatibility
+    try:
+        from src.app.utils.cache import cache_discord_state, get_discord_state, get_cache
+    except ImportError:
+        # Fallback for Docker environment
+        import sys
+        import os
+        sys.path.append('/app')
+        from src.app.utils.cache import cache_discord_state, get_discord_state, get_cache
+    
+    CACHE_AVAILABLE = True
+    print(f"✅ {SERVICE_NAME} - KeyDB cache utilities imported successfully")
+except ImportError as e:
+    print(f"⚠️ {SERVICE_NAME} - Cache utilities not available: {e}. Using in-memory state.")
+    CACHE_AVAILABLE = False
+
 BRIAN_DISCORD_PORT = int(os.getenv("BRIAN_DISCORD_PORT", 5012))
 ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://orchestrator:5003/orchestrate")
 
@@ -47,15 +66,31 @@ def health_check():
         is_logged_in = brian_client.user is not None
         is_discord_ready = brian_client.is_ready()
         
-        # Consider ready if logged in or custom ready status
+        # Get state from cache if available
+        cached_state = None
+        cache_status = "not_available"
+        if CACHE_AVAILABLE:
+            try:
+                cached_state = get_discord_state('brian')
+                cache_status = "connected" if cached_state else "no_data"
+            except Exception as e:
+                cache_status = f"error: {str(e)}"
+        
+        # Consider ready if logged in or custom ready status or cached ready
         client_ready = is_logged_in or brian_ready
+        if cached_state:
+            client_ready = client_ready or cached_state.get('ready', False)
         
         status = "healthy" if client_ready else "degraded"
         
-        return jsonify({
+        response_data = {
             "status": status,
             "service": SERVICE_NAME,
             "timestamp": datetime.now().isoformat(),
+            "cache": {
+                "status": cache_status,
+                "available": CACHE_AVAILABLE
+            },
             "discord_client": {
                 "logged_in": is_logged_in,
                 "discord_ready": is_discord_ready,
@@ -64,7 +99,13 @@ def health_check():
                 "user_id": brian_client.user.id if brian_client.user else None,
                 "username": brian_client.user.name if brian_client.user else None
             }
-        }), 200 if status == "healthy" else 503
+        }
+        
+        # Include cached state if available
+        if cached_state:
+            response_data["cached_state"] = cached_state
+        
+        return jsonify(response_data), 200 if status == "healthy" else 503
     except Exception as e:
         return jsonify({
             "status": "unhealthy",
@@ -194,6 +235,19 @@ def setup_discord_events():
         brian_mention = f"<@{user.id}>"
         brian_id = user.id
         brian_ready = True
+        
+        # Cache state in KeyDB if available
+        if CACHE_AVAILABLE:
+            state_data = {
+                'ready': True,
+                'mention': brian_mention,
+                'user_id': user.id,
+                'username': user.name,
+                'timestamp': datetime.now().isoformat(),
+                'service_name': SERVICE_NAME
+            }
+            cache_discord_state('brian', state_data, ttl=3600)
+            print(f"INFO: {SERVICE_NAME} - Brian Bot state cached in KeyDB")
         
         print(f"INFO: {SERVICE_NAME} - Brian Bot logged in as {user}")
         print(f"INFO: {SERVICE_NAME} - Brian mention: {brian_mention}")

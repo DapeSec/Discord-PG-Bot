@@ -201,7 +201,7 @@ services:
 
 ### 📋 **Future Enhancements**
 
-1. **Advanced Caching**: Redis cache for frequent queries
+1. **Advanced Caching**: KeyDB cache for frequent queries
 2. **Auto-scaling**: Kubernetes-based horizontal pod autoscaling
 3. **Enhanced Monitoring**: Prometheus metrics and Grafana dashboards
 4. **Content Intelligence**: Smart crawl scheduling and change detection

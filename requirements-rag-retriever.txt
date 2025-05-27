@@ -36,4 +36,15 @@ idna==3.6
 yarl==1.9.4
 frozenlist==1.4.1
 multidict==6.0.4
+attrs==23.1.0
+redis>=4.5.0
+
+# Additional dependencies
+urllib3==2.1.0
+certifi==2023.11.17
+charset-normalizer==3.3.2
+idna==3.6
+yarl==1.9.4
+frozenlist==1.4.1
+multidict==6.0.4
 attrs==23.1.0 

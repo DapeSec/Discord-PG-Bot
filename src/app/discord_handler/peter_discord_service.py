@@ -13,6 +13,26 @@ load_dotenv()
 
 # --- Peter Discord Handler Configuration ---
 SERVICE_NAME = "PeterDiscordHandler"
+
+# KeyDB Cache Integration
+try:
+    # Try multiple import paths for Docker compatibility
+    try:
+        from src.app.utils.cache import cache_discord_state, get_discord_state, get_cache
+    except ImportError:
+        # Fallback for Docker environment
+        import sys
+        import os
+        sys.path.append('/app')
+        from src.app.utils.cache import cache_discord_state, get_discord_state, get_cache
+    
+    CACHE_AVAILABLE = True
+    print(f"✅ {SERVICE_NAME} - KeyDB cache utilities imported successfully")
+except ImportError as e:
+    print(f"⚠️ {SERVICE_NAME} - Cache utilities not available: {e}. Using in-memory state.")
+    CACHE_AVAILABLE = False
+
+# --- Peter Discord Handler Configuration ---
 PETER_DISCORD_PORT = int(os.getenv("PETER_DISCORD_PORT", 5011))
 ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://orchestrator:5003/orchestrate")
 
@@ -47,15 +67,31 @@ def health_check():
         is_logged_in = peter_client.user is not None
         is_discord_ready = peter_client.is_ready()
         
-        # Consider ready if logged in or custom ready status
+        # Get state from cache if available
+        cached_state = None
+        cache_status = "not_available"
+        if CACHE_AVAILABLE:
+            try:
+                cached_state = get_discord_state('peter')
+                cache_status = "connected" if cached_state else "no_data"
+            except Exception as e:
+                cache_status = f"error: {str(e)}"
+        
+        # Consider ready if logged in or custom ready status or cached ready
         client_ready = is_logged_in or peter_ready
+        if cached_state:
+            client_ready = client_ready or cached_state.get('ready', False)
         
         status = "healthy" if client_ready else "degraded"
         
-        return jsonify({
+        response_data = {
             "status": status,
             "service": SERVICE_NAME,
             "timestamp": datetime.now().isoformat(),
+            "cache": {
+                "status": cache_status,
+                "available": CACHE_AVAILABLE
+            },
             "discord_client": {
                 "logged_in": is_logged_in,
                 "discord_ready": is_discord_ready,
@@ -64,7 +100,14 @@ def health_check():
                 "user_id": peter_client.user.id if peter_client.user else None,
                 "username": peter_client.user.name if peter_client.user else None
             }
-        }), 200 if status == "healthy" else 503
+        }
+        
+        # Include cached state if available
+        if cached_state:
+            response_data["cached_state"] = cached_state
+        
+        return jsonify(response_data), 200 if status == "healthy" else 503
+        
     except Exception as e:
         return jsonify({
             "status": "unhealthy",
@@ -195,6 +238,19 @@ def setup_discord_events():
         peter_id = user.id
         peter_ready = True
         
+        # Cache state in KeyDB if available
+        if CACHE_AVAILABLE:
+            state_data = {
+                'ready': True,
+                'mention': peter_mention,
+                'user_id': user.id,
+                'username': user.name,
+                'timestamp': datetime.now().isoformat(),
+                'service_name': SERVICE_NAME
+            }
+            cache_discord_state('peter', state_data, ttl=3600)
+            print(f"INFO: {SERVICE_NAME} - Peter Bot state cached in KeyDB")
+        
         print(f"INFO: {SERVICE_NAME} - Peter Bot logged in as {user}")
         print(f"INFO: {SERVICE_NAME} - Peter mention: {peter_mention}")
 
@@ -292,6 +348,33 @@ def initialize_peter_discord_handler():
     discord_thread.name = "PeterDiscordClientThread"
     discord_thread.start()
     print(f"INFO: {SERVICE_NAME} - Peter Discord client thread started")
+
+def get_peter_state():
+    """Get Peter's current state from cache or memory."""
+    if CACHE_AVAILABLE:
+        cached_state = get_discord_state('peter')
+        if cached_state:
+            return cached_state
+    
+    # Fallback to in-memory state
+    return {
+        'ready': peter_ready,
+        'mention': peter_mention,
+        'user_id': peter_id,
+        'username': peter_client.user.name if peter_client.user else None,
+        'timestamp': datetime.now().isoformat(),
+        'service_name': SERVICE_NAME
+    }
+
+def is_peter_ready():
+    """Check if Peter is ready using cache or memory."""
+    if CACHE_AVAILABLE:
+        cached_state = get_discord_state('peter')
+        if cached_state:
+            return cached_state.get('ready', False)
+    
+    # Fallback to in-memory state
+    return peter_ready or (peter_client.user is not None)
 
 # Initialize Peter Discord Handler when module is imported (for Gunicorn)
 initialize_peter_discord_handler()

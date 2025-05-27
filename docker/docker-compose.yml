@@ -21,6 +21,44 @@ services:
       retries: 12
       start_period: 30s
 
+  # KeyDB Cache Service (Redis-compatible with better performance)
+  keydb:
+    image: eqalpha/keydb:latest
+    container_name: keydb
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      keydb-server 
+      --appendonly yes 
+      --maxmemory 512mb 
+      --maxmemory-policy allkeys-lru
+      --server-threads 4
+      --save 900 1
+    volumes:
+      - keydb_data:/data
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # KeyDB Commander (optional web UI for debugging)
+  keydb-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: keydb-commander
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:keydb:6379
+    depends_on:
+      - keydb
+    networks:
+      - bot_network
+
   # RAG Retriever Service (handles vector database and context retrieval)
   rag-retriever:
     build:
@@ -37,10 +75,13 @@ services:
       - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
       - MONGO_URI=mongodb://admin:adminpassword@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=discord_bot_conversations
+      - REDIS_URL=redis://keydb:6379
     ports:
       - "5005:5005"
     depends_on:
       mongodb:
+        condition: service_healthy
+      keydb:
         condition: service_healthy
     networks:
       - bot_network
@@ -67,10 +108,12 @@ services:
       - PETER_DISCORD_PORT=5011
       - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
       - DISCORD_BOT_TOKEN_PETER=${DISCORD_BOT_TOKEN_PETER}
+      - REDIS_URL=redis://keydb:6379
     ports:
       - "5011:5011"
     depends_on:
       - orchestrator
+      - keydb
     networks:
       - bot_network
     healthcheck:
@@ -93,10 +136,12 @@ services:
       - BRIAN_DISCORD_PORT=5012
       - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
       - DISCORD_BOT_TOKEN_BRIAN=${DISCORD_BOT_TOKEN_BRIAN}
+      - REDIS_URL=redis://keydb:6379
     ports:
       - "5012:5012"
     depends_on:
       - orchestrator
+      - keydb
     networks:
       - bot_network
     healthcheck:
@@ -119,10 +164,12 @@ services:
       - STEWIE_DISCORD_PORT=5013
       - ORCHESTRATOR_API_URL=http://orchestrator:5003/orchestrate
       - DISCORD_BOT_TOKEN_STEWIE=${DISCORD_BOT_TOKEN_STEWIE}
+      - REDIS_URL=redis://keydb:6379
     ports:
       - "5013:5013"
     depends_on:
       - orchestrator
+      - keydb
     networks:
       - bot_network
     healthcheck:
@@ -155,6 +202,8 @@ services:
       - RAG_RETRIEVER_API_URL=http://rag-retriever:5005/retrieve
       # RAG Crawler Service Configuration
       - RAG_CRAWLER_API_URL=http://rag-crawler:5009
+      # KeyDB Cache Configuration
+      - REDIS_URL=redis://keydb:6379
       # LOCAL MISTRAL NEMO CONFIGURATION (Updated for RTX 4070 Super)
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral-nemo}
@@ -166,7 +215,7 @@ services:
       # Fine-tuning System Configuration
       - FINE_TUNING_ENABLED=${FINE_TUNING_ENABLED:-true}
       - QUALITY_CONTROL_ENABLED=${QUALITY_CONTROL_ENABLED:-true}
-      - OPTIMIZATION_THRESHOLD=${OPTIMIZATION_THRESHOLD:-0.7}
+      - OPTIMIZATION_THRESHOLD=${OPTIMIZATION_THRESHOLD:-0.8}
       - MIN_RATINGS_FOR_OPTIMIZATION=${MIN_RATINGS_FOR_OPTIMIZATION:-10}
       - AB_TEST_PERCENTAGE=${AB_TEST_PERCENTAGE:-0.2}
       - QUALITY_CONTROL_MIN_RATING=${QUALITY_CONTROL_MIN_RATING:-3.0}
@@ -175,6 +224,8 @@ services:
       - "5003:5003"
     depends_on:
       mongodb:
+        condition: service_healthy
+      keydb:
         condition: service_healthy
       rag-retriever:
         condition: service_healthy
@@ -302,6 +353,7 @@ services:
 
 volumes:
   mongodb_data:
+  keydb_data:
 
 networks:
   bot_network:

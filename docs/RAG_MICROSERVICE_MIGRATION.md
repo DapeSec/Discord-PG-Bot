@@ -361,7 +361,7 @@ docker-compose logs -f rag-retriever | grep "retrieve"
 ## Future Considerations
 
 ### 1. Caching Layer
-- Implement Redis cache for frequent queries
+- Implement KeyDB cache for frequent queries
 - Cache embeddings for common queries
 - Reduce load on vector database
 
