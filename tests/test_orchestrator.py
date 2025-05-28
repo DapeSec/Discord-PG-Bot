@@ -33,11 +33,31 @@ def mock_mongodb():
             'performance': mock_perf_coll
         }
 
+@pytest.fixture
+def mock_keydb_cache():
+    """Mock KeyDB cache integration."""
+    with patch('app.orchestrator.server.CACHE_AVAILABLE', True), \
+         patch('app.orchestrator.server.get_cache') as mock_get_cache, \
+         patch('app.orchestrator.server.cache_recent_response') as mock_cache_response, \
+         patch('app.orchestrator.server.get_recent_responses') as mock_get_responses:
+        
+        mock_cache_instance = Mock()
+        mock_get_cache.return_value = mock_cache_instance
+        mock_cache_response.return_value = True
+        mock_get_responses.return_value = []
+        
+        yield {
+            'get_cache': mock_get_cache,
+            'cache_response': mock_cache_response,
+            'get_responses': mock_get_responses,
+            'cache_instance': mock_cache_instance
+        }
+
 class TestOrchestratorV2:
     """Test suite for Orchestrator V2 Service."""
 
-    def test_health_check_healthy(self, client, mock_mongodb):
-        """Test health check when all services are healthy."""
+    def test_health_check_healthy(self, client, mock_mongodb, mock_keydb_cache):
+        """Test health check when all services are healthy including KeyDB."""
         with patch('requests.get') as mock_get:
             # Mock all external service health checks as successful
             mock_response = Mock()
@@ -52,6 +72,7 @@ class TestOrchestratorV2:
             assert data['service'] == 'OrchestratorV2'
             assert 'components' in data
             assert data['components']['mongodb'] == 'healthy'
+            assert data['cache']['available'] is True
 
     def test_health_check_degraded(self, client, mock_mongodb):
         """Test health check when some services are unhealthy."""
@@ -72,12 +93,28 @@ class TestOrchestratorV2:
             data = json.loads(response.data)
             assert data['status'] == 'degraded'
 
+    def test_health_check_cache_unavailable(self, client, mock_mongodb):
+        """Test health check when KeyDB cache is unavailable."""
+        with patch('app.orchestrator.server.CACHE_AVAILABLE', False), \
+             patch('requests.get') as mock_get:
+            
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_get.return_value = mock_response
+            
+            response = client.get('/health')
+            assert response.status_code == 200
+            
+            data = json.loads(response.data)
+            assert data['cache']['available'] is False
+            assert data['cache']['fallback'] == 'in-memory'
+
     @patch('app.orchestrator.server.get_conversation_history')
     @patch('app.orchestrator.server._generate_with_mistral_llm')  # Updated to mock local Mistral LLM
     @patch('app.orchestrator.server.send_to_discord')
     @patch('app.orchestrator.server.save_conversation_turn')
-    def test_orchestrate_conversation_success(self, mock_save, mock_discord, mock_generate, mock_history, client):
-        """Test successful conversation orchestration with local Mistral LLM."""
+    def test_orchestrate_conversation_success(self, mock_save, mock_discord, mock_generate, mock_history, client, mock_keydb_cache):
+        """Test successful conversation orchestration with local Mistral LLM and KeyDB caching."""
         # Mock dependencies
         mock_history.return_value = []
         mock_generate.return_value = "Holy crap! This is a test response!"  # Now returns string directly
@@ -105,6 +142,40 @@ class TestOrchestratorV2:
         mock_generate.assert_called_once()
         mock_discord.assert_called_once()
         mock_save.assert_called_once()
+        
+        # Verify cache operations were called
+        mock_keydb_cache['get_responses'].assert_called_once()
+        mock_keydb_cache['cache_response'].assert_called_once()
+
+    @patch('app.orchestrator.server.get_conversation_history')
+    @patch('app.orchestrator.server._generate_with_mistral_llm')
+    def test_orchestrate_response_deduplication(self, mock_generate, mock_history, client):
+        """Test response deduplication using KeyDB cache."""
+        with patch('app.orchestrator.server.CACHE_AVAILABLE', True), \
+             patch('app.orchestrator.server.get_recent_responses') as mock_get_responses, \
+             patch('app.orchestrator.server.is_duplicate_response') as mock_is_duplicate:
+            
+            # Mock dependencies
+            mock_history.return_value = []
+            mock_get_responses.return_value = ["previous response", "another response"]
+            mock_is_duplicate.return_value = True  # Simulate duplicate detected
+            mock_generate.return_value = "Holy crap! This is a test response!"
+            
+            request_data = {
+                "user_query": "Hello Peter!",
+                "channel_id": "123456789",
+                "initiator_bot_name": "Peter",
+                "human_user_display_name": "TestUser"
+            }
+            
+            response = client.post('/orchestrate', json=request_data)
+            
+            # Should still succeed but with duplicate detection
+            assert response.status_code == 200
+            
+            # Verify duplicate check was performed
+            mock_get_responses.assert_called_once_with("Peter", limit=50)
+            mock_is_duplicate.assert_called_once()
 
     def test_orchestrate_conversation_missing_fields(self, client):
         """Test orchestration with missing required fields."""
