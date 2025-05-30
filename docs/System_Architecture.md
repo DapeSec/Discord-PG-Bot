@@ -4,268 +4,270 @@
 
 This Family Guy Discord Bot system employs a microservices architecture, fully containerized with Docker and orchestrated via Docker Compose. The design prioritizes local LLM processing (using `mistral-nemo` via Ollama), modularity for easier development and scaling, and a clear separation of concerns. This document provides a more in-depth look at each service and its responsibilities than the overview in the main `README.md`.
 
-**Key Architectural Change**: The RAG (Retrieval Augmented Generation) system has been separated into **two dedicated microservices** (`rag-retriever` and `rag-crawler`) to improve separation of concerns, enable independent scaling, optimize for different operational patterns, and provide a cleaner architecture.
+**Key Architectural Changes**: 
+- The RAG (Retrieval Augmented Generation) system has been separated into **two dedicated microservices** (`rag-retriever` and `rag-crawler`) to improve separation of concerns, enable independent scaling, optimize for different operational patterns, and provide a cleaner architecture.
+- **KeyDB replaces Redis** for improved performance and better memory efficiency
+- **12 total microservices** provide complete separation of concerns
 
 ## 2. Core Principles
 
 *   **Local First**: All core LLM processing happens locally via Ollama, eliminating external API dependencies and costs for this crucial function.
-*   **Microservices**: Each distinct piece of functionality (Discord interaction, LLM orchestration, RAG retrieval, RAG crawling, character configuration, database) is a separate service.
+*   **Microservices**: Each distinct piece of functionality (Discord interaction, LLM orchestration, RAG retrieval, RAG crawling, character configuration, caching) is a separate service.
 *   **Dockerization**: All services are containerized for consistent environments and simplified deployment.
-*   **Centralized Orchestration**: A single `Orchestrator` service acts as the brain, handling complex logic like LLM calls, fine-tuning, and QC, while delegating RAG operations to the dedicated services.
-*   **Stateless vs. Stateful**: Application services (Handler, Orchestrator, Character Configs, RAG services) aim to be largely stateless, relying on MongoDB and ChromaDB for persistent data.
+*   **Centralized Orchestration**: The `Message Router` service acts as the central hub, while the `Orchestrator` handles organic conversations and the `LLM Service` provides centralized language model access.
+*   **Stateless vs. Stateful**: Application services aim to be largely stateless, relying on KeyDB for caching and ChromaDB for persistent vector data.
 *   **Operational Separation**: RAG retrieval (high-frequency, real-time) and RAG crawling (low-frequency, batch) are separated for optimal resource allocation and scaling.
 
 ## 3. Service Breakdown
 
 ```mermaid
- C4Context
-  title System Architecture Diagram - RAG Microservices Architecture
-
-  Enterprise_Boundary(eb, "Family Guy Bot System") {
-    System_Ext(User, "Discord User", "Interacts via Discord client")
-    System_Ext(DiscordAPI, "Discord API Gateway", "Handles bot events and messages")
-    System_Ext(Ollama, "Ollama Service (Local LLM)", "Runs mistral-nemo on host machine. Port 11434")
-    System_Ext(FandomWiki, "Family Guy Fandom Wiki", "Source of RAG content")
-
-    System_Boundary(sb_docker, "Docker Network") {
-      Container(DH, "Discord Handler", "Python/Flask", "Manages Discord WebSocket connections, API interactions. Routes messages to Orchestrator. Port 5004")
-      Container(ORCH, "Orchestrator", "Python/Flask", "Central LLM brain: QC, Fine-Tuning, Organic Convo, History. Coordinates with RAG services. Port 5003")
-      Container(RAG_RET, "RAG Retriever", "Python/Flask", "Real-time context retrieval: manages ChromaDB queries, embeddings, semantic search. Port 5005")
-      Container(RAG_CRAWL, "RAG Crawler", "Python/Flask", "Batch web scraping: crawls Family Guy Wiki, processes content, populates vector store. Port 5009")
-      ContainerDb(MONGO, "MongoDB", "Database", "Stores conversation history, fine-tuning data, performance metrics. Port 27017")
-      ContainerDb(CHROMA, "ChromaDB", "Vector Database", "Stores Family Guy Wiki embeddings for RAG. Shared by both RAG services")
-      Container(PETER, "Peter Config", "Python/Flask (Lightweight)", "Serves Peter Griffin's metadata & base prompt. Port 5006")
-      Container(BRIAN, "Brian Config", "Python/Flask (Lightweight)", "Serves Brian Griffin's metadata & base prompt. Port 5007")
-      Container(STEWIE, "Stewie Config", "Python/Flask (Lightweight)", "Serves Stewie Griffin's metadata & base prompt. Port 5008")
-    }
-  }
-
-  Rel(User, DiscordAPI, "Sends/Receives Messages")
-  Rel(DiscordAPI, DH, "Forwards Events/Messages")
-
-  Rel(DH, ORCH, "Forwards User Queries, Receives Bot Responses", "HTTP POST")
-
-  Rel(ORCH, Ollama, "Sends Prompts, Receives Generations", "HTTP")
-  Rel(ORCH, RAG_RET, "Requests Context Retrieval", "HTTP POST")
-  Rel(ORCH, RAG_CRAWL, "Triggers Crawling Operations", "HTTP POST")
-  Rel(ORCH, MONGO, "Stores/Retrieves Conversation Data, Tuning Data", "MongoDB Driver")
-  Rel(ORCH, PETER, "Gets Peter's Config", "HTTP GET")
-  Rel(ORCH, BRIAN, "Gets Brian's Config", "HTTP GET")
-  Rel(ORCH, STEWIE, "Gets Stewie's Config", "HTTP GET")
-
-  Rel(RAG_RET, CHROMA, "Queries RAG Vectors", "ChromaDB Client")
-  Rel(RAG_CRAWL, CHROMA, "Stores/Updates RAG Vectors", "ChromaDB Client")
-  Rel(RAG_CRAWL, FandomWiki, "Scrapes Content", "HTTP")
-
-  Rel(DH, DiscordAPI, "Sends Bot Messages")
+graph TB
+    subgraph "Discord Interface Layer"
+        PETER_BOT[Peter Discord<br/>Port 6011<br/>🍺]
+        BRIAN_BOT[Brian Discord<br/>Port 6012<br/>🐕]
+        STEWIE_BOT[Stewie Discord<br/>Port 6013<br/>👶]
+    end
+    
+    subgraph "Core Processing Layer"
+        MESSAGE_ROUTER[Message Router<br/>Port 6005<br/>🎯]
+        LLM_SERVICE[LLM Service<br/>Port 6001<br/>🧠]
+        QUALITY_CONTROL[Quality Control<br/>Port 6003<br/>🔍]
+    end
+    
+    subgraph "Intelligence Layer"
+        CONVERSATION_COORD[Conversation Coordinator<br/>Port 6002<br/>🎭]
+        ORCHESTRATOR[Orchestrator<br/>Port 6008<br/>🌱]
+        FINE_TUNING[Fine Tuning<br/>Port 6004<br/>📈]
+    end
+    
+    subgraph "Knowledge Layer"
+        CHARACTER_CONFIG[Character Config<br/>Port 6006<br/>📝]
+        RAG_RETRIEVER[RAG Retriever<br/>Port 6007<br/>📚]
+        RAG_CRAWLER[RAG Crawler<br/>Port 6009<br/>🕷️]
+    end
+    
+    subgraph "Infrastructure Layer"
+        KEYDB[(KeyDB Cache<br/>Port 6379<br/>⚡)]
+        KEYDB_UI[KeyDB Commander<br/>Port 8081<br/>🖥️]
+        OLLAMA[Ollama LLM<br/>Local RTX GPU<br/>🚀]
+        CHROMADB[(ChromaDB<br/>Vector Store<br/>🔢)]
+    end
+    
+    PETER_BOT --> MESSAGE_ROUTER
+    BRIAN_BOT --> MESSAGE_ROUTER
+    STEWIE_BOT --> MESSAGE_ROUTER
+    
+    MESSAGE_ROUTER --> LLM_SERVICE
+    MESSAGE_ROUTER --> CHARACTER_CONFIG
+    MESSAGE_ROUTER --> RAG_RETRIEVER
+    MESSAGE_ROUTER --> CONVERSATION_COORD
+    MESSAGE_ROUTER --> QUALITY_CONTROL
+    MESSAGE_ROUTER --> FINE_TUNING
+    
+    ORCHESTRATOR --> MESSAGE_ROUTER
+    ORCHESTRATOR --> LLM_SERVICE
+    ORCHESTRATOR --> RAG_RETRIEVER
+    ORCHESTRATOR --> PETER_BOT
+    ORCHESTRATOR --> BRIAN_BOT
+    ORCHESTRATOR --> STEWIE_BOT
+    
+    LLM_SERVICE --> OLLAMA
+    RAG_RETRIEVER --> CHROMADB
+    RAG_CRAWLER --> CHROMADB
+    
+    MESSAGE_ROUTER --> KEYDB
+    ORCHESTRATOR --> KEYDB
+    RAG_RETRIEVER --> KEYDB
+    KEYDB --> KEYDB_UI
+    
+    style PETER_BOT fill:#ff9999
+    style BRIAN_BOT fill:#99ff99  
+    style STEWIE_BOT fill:#9999ff
+    style ORCHESTRATOR fill:#ffff99
+    style KEYDB fill:#ff99ff
 ```
 
-### 3.1. Discord Handler (`discord-handler`)
+### 3.1. Discord Handler Services (`peter-discord`, `brian-discord`, `stewie-discord`)
 
 *   **Technology**: Python, Flask, `discord.py` library.
+*   **Ports**: 6011 (Peter), 6012 (Brian), 6013 (Stewie)
 *   **Responsibilities**:
-    *   Connects to the Discord Gateway using the bot tokens for Peter, Brian, and Stewie.
-    *   Listens for incoming messages, mentions, and other relevant Discord events.
+    *   Each service connects to Discord using its respective bot token
+    *   Listens for incoming messages, mentions, and other relevant Discord events
     *   Parses incoming Discord messages to extract user intent, mentioned bot, content, channel ID, user ID, etc.
-    *   Forwards processed requests to the Orchestrator's `/orchestrate` endpoint via an HTTP POST request.
-    *   Receives the generated bot response from the Orchestrator.
-    *   Formats and sends the response back to the appropriate Discord channel using the correct bot identity.
-    *   Handles basic Discord API rate limits and connection retries.
-*   **Key Interactions**: Discord API, Orchestrator.
-*   **Dockerfile**: `docker/Dockerfile.discord_handler`
-*   **State**: Largely stateless, but manages active Discord connections.
+    *   Forwards processed requests to the Message Router's `/orchestrate` endpoint via HTTP POST
+    *   Receives the generated bot response from the Message Router
+    *   Formats and sends the response back to the appropriate Discord channel using the correct bot identity
+    *   Handles basic Discord API rate limits and connection retries
+*   **Key Interactions**: Discord API, Message Router
+*   **State**: Largely stateless, but manages active Discord connections
 
-### 3.2. Orchestrator (`orchestrator`)
+### 3.2. Message Router (`message-router`)
 
-*   **Technology**: Python, Flask, LangChain, libraries for MongoDB and other utilities.
-*   **Responsibilities (The "Brain")**:
-    *   **LLM Interaction**: Constructs detailed prompts and sends requests to the local Ollama service (`mistral-nemo`) for text generation.
-    *   **Character Coordination**: Determines which character should respond or initiate a conversation.
-    *   **Prompt Engineering**: Manages complex prompt templates incorporating character personality, conversation history, RAG context, and user query.
-    *   **RAG Coordination**: 
-        *   Requests context retrieval from the RAG Retriever service for real-time queries.
-        *   Triggers crawling operations via the RAG Crawler service for content updates.
-        *   Integrates retrieved context into LLM prompts.
-    *   **Adaptive Quality Control (QC)**: Dynamically adjusts quality standards based on conversation richness (30-75/100 thresholds) and applies character-aware anti-hallucination measures. Uses LLM-based evaluation for authenticity, relevance, and safety with retry-based length validation.
-    *   **NO_FALLBACK_MODE**: Advanced infinite retry system that eliminates generic fallback responses, using enhanced retry context and exponential backoff to continuously attempt response generation until quality standards are met.
-    *   **Supervised Fine-Tuning Support**: Logs responses and quality assessments to MongoDB. Provides API endpoints for submitting ratings and triggering prompt optimization processes.
-    *   **Enhanced Organic Conversation Coordination**: Monitors channel activity for both follow-up opportunities (immediate multi-character responses) and organic conversation initiation (proactive conversation starters during silence periods).
-    *   **Conversation History Management**: Loads and saves conversation history from/to MongoDB to provide context to the LLM.
-    *   **State Management**: Tracks session IDs, current speakers, and other conversational states.
-    *   **API Endpoints**: Exposes various endpoints for Discord Handler interaction (`/orchestrate`), fine-tuning (`/rate_response`, `/optimization_report`, `/prompt_performance`, `/trigger_optimization`, `/fine_tuning_stats`), health checks (`/health`), crawl management (`/crawl/trigger`, `/crawl/status`), and status monitoring (`/quality_control_status`, `/organic_conversation_status`).
-*   **Key Interactions**: Discord Handler, Ollama, RAG Retriever, RAG Crawler, MongoDB, Character Config services.
-*   **Dockerfile**: `docker/Dockerfile.orchestrator`
-*   **State**: Relies heavily on MongoDB for persistent state; maintains some in-memory caches or session details for short periods.
+*   **Technology**: Python, Flask, Requests, KeyDB integration
+*   **Port**: 6005
+*   **Responsibilities (Central Hub)**:
+    *   **Request Routing**: Routes incoming messages to appropriate services based on content type and character
+    *   **Service Orchestration**: Coordinates calls between LLM Service, Character Config, RAG Retriever, Quality Control, and other services
+    *   **Response Assembly**: Combines outputs from multiple services into final responses
+    *   **Caching Management**: Implements response caching via KeyDB to improve performance
+    *   **Load Balancing**: Distributes requests across available service instances
+    *   **Health Monitoring**: Monitors the health of downstream services
+*   **Key Interactions**: All Discord Handlers, LLM Service, Character Config, RAG services, Quality Control, Conversation Coordinator, Fine Tuning
+*   **State**: Stateless with KeyDB for caching
 
-### 3.3. RAG Retriever (`rag-retriever`)
+### 3.3. LLM Service (`llm-service`)
 
-*   **Technology**: Python, Flask, LangChain, SentenceTransformers, ChromaDB.
+*   **Technology**: Python, Flask, LangChain, Ollama client
+*   **Port**: 6001
+*   **Responsibilities (Centralized AI)**:
+    *   **Ollama Integration**: Single point of access for all LLM operations using `mistral-nemo`
+    *   **Response Generation**: Processes prompts and generates character-appropriate responses
+    *   **Response Caching**: Caches LLM responses in KeyDB to reduce duplicate API calls
+    *   **Model Management**: Handles model configuration and optimization
+    *   **Performance Monitoring**: Tracks response times and quality metrics
+*   **Key Interactions**: Message Router, Orchestrator, Ollama
+*   **State**: Stateless with aggressive KeyDB caching
+
+### 3.4. Quality Control (`quality-control`)
+
+*   **Technology**: Python, Flask, ML analysis libraries
+*   **Port**: 6003
 *   **Responsibilities**:
-    *   **Real-time Context Retrieval**: Provides fast, efficient semantic search and context retrieval for user queries.
-    *   **Vector Database Queries**: Manages read operations on the ChromaDB vector database.
-    *   **Embedding Generation**: Generates embeddings for incoming queries using SentenceTransformers.
-    *   **Result Filtering**: Applies relevance score filtering and result ranking.
-    *   **Health Monitoring**: Exposes health check endpoints and vector store status information.
-    *   **API Endpoints**: 
-        *   `/retrieve` (POST): Main endpoint for context retrieval given a query
-        *   `/health` (GET): Health check and service status
-        *   `/vector_store_status` (GET): Information about the current vector store state
-*   **Key Interactions**: Orchestrator (primary consumer), ChromaDB (read operations).
-*   **Dockerfile**: `docker/Dockerfile.rag_retriever`
-*   **State**: Stateless application logic, accesses shared ChromaDB data via volume mounts.
-*   **Operational Pattern**: High-frequency, low-latency operations (every user query).
+    *   **Adaptive Quality Assessment**: Dynamically adjusts quality thresholds based on conversation depth (30-75/100)
+    *   **Character-Specific Controls**: Applies different quality standards for Peter, Brian, and Stewie
+    *   **Anti-Hallucination**: Prevents responses that are out of character or factually incorrect
+    *   **Response Validation**: Ensures responses meet length, content, and safety requirements
+    *   **NO_FALLBACK_MODE**: Implements infinite retry system with enhanced context
+*   **Key Interactions**: Message Router, LLM Service
+*   **State**: Stateless with configuration caching
 
-### 3.4. RAG Crawler (`rag-crawler`)
+### 3.5. Orchestrator (`orchestrator`)
 
-*   **Technology**: Python, Flask, LangChain, SentenceTransformers, ChromaDB, BeautifulSoup, Scrapy.
+*   **Technology**: Python, Flask, KeyDB, ML libraries
+*   **Port**: 6008
+*   **Responsibilities (Organic Conversations)**:
+    *   **Organic Conversation Management**: Monitors channel activity and initiates natural conversations
+    *   **Follow-up Coordination**: Triggers character responses based on content analysis
+    *   **Timing Management**: Controls conversation flow with appropriate delays
+    *   **Character Selection**: Determines which character should respond to specific topics
+    *   **Dynamic Starter Generation**: Creates LLM-generated conversation starters with character context
+*   **Key Interactions**: Message Router, LLM Service, RAG Retriever, Discord Handlers
+*   **State**: Uses KeyDB for conversation state tracking
+
+### 3.6. Conversation Coordinator (`conversation-coordinator`)
+
+*   **Technology**: Python, Flask, KeyDB
+*   **Port**: 6002
 *   **Responsibilities**:
-    *   **Web Scraping**: Crawls the Family Guy Fandom Wiki and other content sources.
-    *   **Content Processing**: Handles text extraction, cleaning, and chunking of scraped content.
-    *   **Vector Database Population**: Generates embeddings and stores them in ChromaDB.
-    *   **Crawl Management**: Manages crawling schedules, status tracking, and error handling.
-    *   **Batch Operations**: Handles large-scale content updates and vector store maintenance.
-    *   **API Endpoints**:
-        *   `/crawl/start` (POST): Start a new crawling operation
-        *   `/crawl/stop` (POST): Stop current crawling operation
-        *   `/crawl/status` (GET): Get current crawl status and history
-        *   `/health` (GET): Health check and service status
-        *   `/vector_store/info` (GET): Vector store information and statistics
-*   **Key Interactions**: Orchestrator (receives triggers), ChromaDB (write operations), External websites (scraping).
-*   **Dockerfile**: `docker/Dockerfile.rag_crawler`
-*   **State**: Maintains crawl state and progress; accesses shared ChromaDB data via volume mounts.
-*   **Operational Pattern**: Low-frequency, high-resource batch operations (weekly/monthly crawls).
+    *   **Character Selection Logic**: Implements intelligent character selection based on content
+    *   **Personality Matching**: Matches topics to character interests and speaking patterns
+    *   **Response Coordination**: Ensures appropriate character responses to user interactions
+    *   **Multi-Character Dynamics**: Manages interactions between characters
+*   **Key Interactions**: Message Router, KeyDB
+*   **State**: Uses KeyDB for character state and preferences
 
-### 3.5. Character Configuration Services (`peter`, `brian`, `stewie`)
+### 3.7. Fine Tuning (`fine-tuning`)
 
-*   **Technology**: Python, Flask (very lightweight).
+*   **Technology**: Python, Flask, KeyDB, ML analysis
+*   **Port**: 6004
 *   **Responsibilities**:
-    *   Serve basic static configuration and metadata for each respective character.
-    *   This typically includes the character's name, a detailed base system prompt outlining their personality, speech patterns, catchphrases, relationships, and any specific rules for their portrayal.
-    *   Exposes a simple `/character_info` endpoint that the Orchestrator can call to get this data.
-    *   **Crucially, these services DO NOT make any LLM calls themselves.** They are purely for providing configuration to the Orchestrator.
-*   **Key Interactions**: Orchestrator.
-*   **Dockerfile**: `docker/Dockerfile.bot_config` (a single generic Dockerfile for all three lightweight config services).
-*   **State**: Stateless. Configuration is part of their codebase or loaded from simple files at startup.
+    *   **Response Optimization**: A/B tests different prompt strategies
+    *   **Performance Analytics**: Tracks response quality and user engagement
+    *   **Prompt Evolution**: Continuously improves character prompts based on feedback
+    *   **Quality Metrics**: Provides detailed analytics on response effectiveness
+*   **Key Interactions**: Message Router, KeyDB
+*   **State**: Uses KeyDB for metrics and optimization data
 
-### 3.6. MongoDB (`mongodb`)
+### 3.8. Character Config (`character-config`)
 
-*   **Technology**: Official `mongo:5.0` Docker image.
+*   **Technology**: Python, Flask (lightweight)
+*   **Port**: 6006
 *   **Responsibilities**:
-    *   **Conversation History**: Stores detailed logs of all interactions (user messages, bot responses, timestamps, channel, user, session ID).
-    *   **Fine-Tuning Data**: Stores response ratings (automated QC scores, manual user ratings), feedback text, and versioned character prompts.
-    *   **Performance Metrics**: Can store aggregated stats on response quality, character activity, etc.
-    *   **RAG Crawl Status**: Timestamps and status of Family Guy Wiki crawls managed by RAG Crawler.
-    *   **Dead Letter Queue (DLQ)**: Stores messages that failed processing or delivery for later inspection or retry.
-*   **Key Interactions**: Orchestrator, RAG Crawler (for crawl status tracking).
-*   **Persistence**: Data is persisted via a Docker named volume (`mongodb_data`).
+    *   **Character Metadata**: Serves character configurations including prompts, personality traits, and speaking patterns
+    *   **Prompt Management**: Manages versioned character prompts for Peter, Brian, and Stewie
+    *   **Configuration Caching**: Implements 24-hour caching for character configurations
+    *   **Dynamic Updates**: Allows for runtime character configuration updates
+*   **Key Interactions**: Message Router
+*   **State**: Stateless with configuration caching in KeyDB
 
-### 3.7. Ollama (External Service)
+### 3.9. RAG Retriever (`rag-retriever`)
 
-*   **Technology**: Ollama running on the host machine (or accessible on the network).
+*   **Technology**: Python, Flask, LangChain, SentenceTransformers, ChromaDB
+*   **Port**: 6007
 *   **Responsibilities**:
-    *   Serves the `mistral-nemo` Large Language Model.
-    *   Handles the actual LLM inference (text generation) based on prompts received from the Orchestrator.
-    *   Exposes an API (typically on `http://host.docker.internal:11434` from within Docker containers) that the Orchestrator calls.
-*   **Key Interactions**: Orchestrator.
-*   **Note**: While essential, Ollama runs *outside* the project's Docker Compose setup but must be accessible by it.
+    *   **Real-time Context Retrieval**: Provides fast semantic search for user queries (<100ms)
+    *   **Vector Database Queries**: Manages read operations on ChromaDB vector database
+    *   **Embedding Generation**: Generates embeddings using `all-MiniLM-L6-v2` model
+    *   **Result Caching**: Caches frequent queries in KeyDB for 1-hour TTL
+    *   **Relevance Filtering**: Applies semantic relevance scoring and filtering
+*   **Key Interactions**: Message Router, Orchestrator, ChromaDB, KeyDB
+*   **State**: Stateless with query result caching
+*   **Operational Pattern**: High-frequency, low-latency operations
 
-### 3.8. ChromaDB (RAG Vector Store)
+### 3.10. RAG Crawler (`rag-crawler`)
 
-*   **Technology**: ChromaDB library used within both RAG services; data stored on a persistent volume.
+*   **Technology**: Python, Flask, BeautifulSoup, ChromaDB, SentenceTransformers
+*   **Port**: 6009
 *   **Responsibilities**:
-    *   Stores vector embeddings of text chunks from the Family Guy Fandom Wiki.
-    *   Enables efficient semantic similarity searches for the RAG system.
-*   **Key Interactions**: 
-    *   RAG Retriever (queries and reads)
-    *   RAG Crawler (writes and updates)
-*   **Persistence**: Data is persisted via a Docker volume mount (`../chroma_db:/app/chroma_db`), ensuring the RAG index survives container restarts.
-*   **Shared Access**: Both RAG services access the same ChromaDB instance through shared volume mounts.
+    *   **Web Scraping**: Crawls Family Guy Fandom Wiki and other content sources
+    *   **Content Processing**: Handles text extraction, cleaning, and chunking
+    *   **Vector Database Population**: Generates and stores embeddings in ChromaDB
+    *   **Batch Operations**: Manages large-scale content updates and maintenance
+    *   **Crawl Scheduling**: Handles automated crawling with configurable intervals
+*   **Key Interactions**: Orchestrator, ChromaDB, External websites
+*   **State**: Maintains crawl state and progress in local storage
+*   **Operational Pattern**: Low-frequency, high-resource batch operations
+
+### 3.11. KeyDB Cache (`keydb`)
+
+*   **Technology**: KeyDB (Redis-compatible with better performance)
+*   **Port**: 6379
+*   **Responsibilities**:
+    *   **High-Performance Caching**: Faster than Redis with multi-threading support
+    *   **Session Management**: Stores conversation state and user sessions
+    *   **Response Caching**: Caches LLM responses, character configs, and RAG queries
+    *   **Performance Optimization**: 2GB memory limit with LRU eviction policy
+*   **Key Interactions**: All application services
+*   **Management**: Web UI available via KeyDB Commander on port 8081
+
+### 3.12. ChromaDB (Vector Store)
+
+*   **Technology**: ChromaDB (embedded vector database)
+*   **Responsibilities**:
+    *   **Vector Storage**: Stores embeddings of Family Guy knowledge base
+    *   **Semantic Search**: Enables fast similarity searches for RAG operations
+    *   **Persistence**: Data persisted via Docker volume mounts
+*   **Key Interactions**: RAG Retriever (reads), RAG Crawler (writes)
+*   **Access Pattern**: Shared access via volume mounts across RAG services
+
+### 3.13. Ollama (External Service)
+
+*   **Technology**: Ollama with Mistral-Nemo model
+*   **Port**: 11434 (external to Docker network)
+*   **Responsibilities**:
+    *   **Local LLM Inference**: Runs Mistral-Nemo model for text generation
+    *   **GPU Acceleration**: Utilizes RTX GPUs for faster inference
+    *   **API Access**: Provides HTTP API for LLM operations
+*   **Key Interactions**: LLM Service
+*   **Note**: Runs outside Docker but accessible via `host.docker.internal:11434`
 
 ## 4. Communication Flow (Example: User Message)
 
 1.  **User** sends a message (e.g., `@Peter hello`) in Discord.
-2.  **Discord API** forwards this to the **Discord Handler**.
-3.  **Discord Handler** identifies Peter as the target, processes the message, and `POST`s it to `Orchestrator:/orchestrate`.
-4.  **Orchestrator**:
-    a.  Loads conversation history from **MongoDB**.
-    b.  (If RAG is relevant) Sends `POST` request to **RAG Retriever** `/retrieve` endpoint with the user query.
-    c.  **RAG Retriever** processes the query, searches **ChromaDB**, and returns relevant context.
-    d.  (If Character Config not cached) `GET`s Peter's config from `Peter Config:/character_info`.
-    e.  Constructs a full prompt for **Ollama** including the retrieved context.
-    f.  Sends prompt to **Ollama**, receives generated text.
-    g.  (If QC enabled) Performs QC assessment using **Ollama** again.
-    h.  Saves response and any QC/tuning data to **MongoDB**.
-    i.  Returns the final response to the **Discord Handler**.
-5.  **Discord Handler** sends Peter's response back to Discord via the **Discord API**.
-6.  **User** sees Peter's reply.
-
-### 4.1. RAG Retrieval Flow (Detailed)
-
-When the Orchestrator needs context for a user query:
-
-1.  **Orchestrator** sends `POST /retrieve` to **RAG Retriever** with:
-    ```json
-    {
-        "query": "chicken fight construction site",
-        "num_results": 3,
-        "min_relevance_score": 0.7
-    }
-    ```
-2.  **RAG Retriever**:
-    a.  Generates embedding for the query using SentenceTransformers
-    b.  Performs similarity search in **ChromaDB**
-    c.  Filters results by relevance score
-    d.  Formats and returns context chunks
-3.  **RAG Retriever** responds with:
-    ```json
-    {
-        "success": true,
-        "context": "In the episode 'Da Boom', Peter Griffin engages in a prolonged fight with Ernie the Giant Chicken...",
-        "documents_found": 3,
-        "results": [
-            {
-                "content": "In the episode 'Da Boom', Peter Griffin engages in a prolonged fight with Ernie the Giant Chicken...",
-                "source": "familyguy.fandom.com/wiki/Ernie_the_Giant_Chicken",
-                "relevance_score": 0.89
-            }
-        ]
-    }
-    ```
-
-### 4.2. RAG Crawling Flow (Detailed)
-
-When new content needs to be added to the vector store:
-
-1.  **Admin/Scheduler** triggers crawl via **Orchestrator** `POST /crawl/trigger` with:
-    ```json
-    {
-        "start_url": "https://familyguy.fandom.com/wiki/Main_Page",
-        "max_pages": 100,
-        "delay": 1
-    }
-    ```
-2.  **Orchestrator** forwards request to **RAG Crawler** `POST /crawl/start`.
-3.  **RAG Crawler**:
-    a.  Validates no crawl is currently in progress
-    b.  Starts background crawling process
-    c.  Scrapes content from Family Guy Fandom Wiki
-    d.  Processes and chunks text content
-    e.  Generates embeddings using SentenceTransformers
-    f.  Stores new vectors in **ChromaDB**
-    g.  Updates crawl status in **MongoDB**
-4.  **RAG Crawler** responds immediately with:
-    ```json
-    {
-        "message": "Crawl started successfully",
-        "status": "started",
-        "parameters": {
-            "start_url": "https://familyguy.fandom.com/wiki/Main_Page",
-            "max_pages": 100,
-            "delay": 1
-        }
-    }
-    ```
-5.  Crawl continues in background; status can be checked via `GET /crawl/status`.
+2.  **Discord API** forwards this to the appropriate **Discord Handler** (Peter).
+3.  **Peter Discord Handler** processes the message and POSTs to **Message Router** `/orchestrate`.
+4.  **Message Router**:
+    a.  Checks **KeyDB** for cached responses
+    b.  Requests character config from **Character Config Service**
+    c.  Requests context from **RAG Retriever** if relevant
+    d.  Sends generation request to **LLM Service**
+5.  **LLM Service** processes the request with **Ollama** and returns response
+6.  **Message Router** sends response to **Quality Control** for assessment
+7.  **Quality Control** validates response quality and authenticity
+8.  **Message Router** caches final response in **KeyDB** and returns to **Peter Discord Handler**
+9.  **Peter Discord Handler** sends Peter's response to Discord
+10. **Orchestrator** analyzes the interaction for potential follow-up opportunities
 
 ## 5. RAG Microservices Benefits
 
@@ -293,14 +295,10 @@ When new content needs to be added to the vector store:
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| Orchestrator | 5003 | Central coordination and LLM processing |
-| Discord Handler | 5004 | Discord API interactions |
-| RAG Retriever | 5005 | Real-time context retrieval |
-| Peter Config | 5006 | Peter Griffin character configuration |
-| Brian Config | 5007 | Brian Griffin character configuration |
-| Stewie Config | 5008 | Stewie Griffin character configuration |
-| RAG Crawler | 5009 | Web scraping and vector store population |
-| MongoDB | 27017 | Database operations |
+| Orchestrator | 6008 | Central coordination and LLM processing |
+| Discord Handlers | 6011 (Peter), 6012 (Brian), 6013 (Stewie) | Discord API interactions |
+| RAG Retriever | 6007 | Real-time context retrieval |
+| RAG Crawler | 6009 | Web scraping and vector store population |
 | Ollama | 11434 | Local LLM inference (external) |
 
 ## 7. Data Flow and Dependencies

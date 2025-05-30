@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # Simplified all-in-one Discord bot
+  discord-bot-unified:
+    build:
+      context: ..
+      dockerfile: deployment/unified.dockerfile
+    container_name: discord-bot-unified
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DISCORD_BOT_TOKEN_PETER=${DISCORD_BOT_TOKEN_PETER}
+      - DISCORD_BOT_TOKEN_BRIAN=${DISCORD_BOT_TOKEN_BRIAN}
+      - DISCORD_BOT_TOKEN_STEWIE=${DISCORD_BOT_TOKEN_STEWIE}
+      - DEFAULT_DISCORD_CHANNEL_ID=${DEFAULT_DISCORD_CHANNEL_ID}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-https://your-ollama-endpoint}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral-nemo}
+    ports:
+      - "8080:8080"
+    networks:
+      - bot_network
+
+  # Lightweight Redis for caching
+  redis-lite:
+    image: redis:alpine
+    container_name: redis-lite
+    restart: unless-stopped
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    networks:
+      - bot_network
+
+volumes:
+  redis_data:
+
+networks:
+  bot_network:
+    driver: bridge 

@@ -1,0 +1,411 @@
+services:
+  # Infrastructure Services
+  
+  # KeyDB Cache Service (Redis-compatible with better performance)
+  keydb:
+    image: eqalpha/keydb:latest
+    container_name: keydb
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      keydb-server 
+      --appendonly yes 
+      --maxmemory 2gb 
+      --maxmemory-policy allkeys-lru
+      --server-threads 4
+      --save 900 1
+    volumes:
+      - keydb_data:/data
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # KeyDB Commander (optional web UI for debugging)
+  keydb-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: keydb-commander
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:keydb:6379
+    depends_on:
+      - keydb
+    networks:
+      - bot_network
+
+  # Core Microservices
+
+  # LLM Service - Single source of truth for all LLM operations
+  llm-service:
+    build:
+      context: .
+      dockerfile: docker/services/llm-service.dockerfile
+    container_name: llm-service
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LLM_SERVICE_PORT=6001
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b-instruct-q5_K_M}
+      - REDIS_URL=redis://keydb:6379
+      - LLM_RESPONSE_CACHE_TTL=3600
+    ports:
+      - "6001:6001"
+    depends_on:
+      keydb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Advanced AI Services
+
+  # Quality Control Service - Anti-hallucination and response quality
+  quality-control:
+    build:
+      context: .
+      dockerfile: docker/services/quality-control.dockerfile
+    container_name: quality-control
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - QUALITY_CONTROL_PORT=6003
+      - REDIS_URL=redis://keydb:6379
+    ports:
+      - "6003:6003"
+    depends_on:
+      keydb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Conversation Coordinator Service - Intelligent character selection
+  conversation-coordinator:
+    build:
+      context: .
+      dockerfile: docker/services/conversation-coordinator.dockerfile
+    container_name: conversation-coordinator
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CONVERSATION_COORDINATOR_PORT=6002
+      - REDIS_URL=redis://keydb:6379
+    ports:
+      - "6002:6002"
+    depends_on:
+      keydb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Fine-Tuning Service - Response optimization and A/B testing
+  fine-tuning:
+    build:
+      context: .
+      dockerfile: docker/services/fine-tuning.dockerfile
+    container_name: fine-tuning
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FINE_TUNING_PORT=6004
+      - REDIS_URL=redis://keydb:6379
+    ports:
+      - "6004:6004"
+    depends_on:
+      keydb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Character Config Service - Character prompt and configuration management
+  character-config:
+    build:
+      context: .
+      dockerfile: docker/services/character-config.dockerfile
+    container_name: character-config
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CHARACTER_CONFIG_PORT=6006
+      - REDIS_URL=redis://keydb:6379
+      - CHARACTER_CONFIG_CACHE_TTL=86400
+    ports:
+      - "6006:6006"
+    depends_on:
+      keydb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Orchestrator Service - Organic conversation management
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/services/orchestrator.dockerfile
+    container_name: orchestrator
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ORCHESTRATOR_PORT=6008
+      - REDIS_URL=redis://keydb:6379
+      - MESSAGE_ROUTER_URL=http://message-router:6005
+      - LLM_SERVICE_URL=http://llm-service:6001
+      - RAG_RETRIEVER_URL=http://rag-retriever:6007
+      - MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS=5
+      - CONVERSATION_SILENCE_THRESHOLD_MINUTES=15
+      - ORGANIC_CONVERSATION_PROBABILITY=0.4
+      - DEFAULT_DISCORD_CHANNEL_ID=${DEFAULT_DISCORD_CHANNEL_ID}
+    ports:
+      - "6008:6008"
+    depends_on:
+      keydb:
+        condition: service_healthy
+      message-router:
+        condition: service_healthy
+      llm-service:
+        condition: service_healthy
+      rag-retriever:
+        condition: service_healthy
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6008/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Message Router Service - Central routing and orchestration
+  message-router:
+    build:
+      context: .
+      dockerfile: docker/services/message-router.dockerfile
+    container_name: message-router
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MESSAGE_ROUTER_PORT=6005
+      - REDIS_URL=redis://keydb:6379
+      - LLM_SERVICE_URL=http://llm-service:6001
+      - CHARACTER_CONFIG_API_URL=http://character-config:6006
+      - RAG_RETRIEVER_URL=http://rag-retriever:6007
+      # Updated URLs for advanced services
+      - CONVERSATION_COORDINATOR_URL=http://conversation-coordinator:6002
+      - QUALITY_CONTROL_URL=http://quality-control:6003
+      - FINE_TUNING_URL=http://fine-tuning:6004
+    ports:
+      - "6005:6005"
+    depends_on:
+      keydb:
+        condition: service_healthy
+      llm-service:
+        condition: service_healthy
+      character-config:
+        condition: service_healthy
+      quality-control:
+        condition: service_healthy
+      conversation-coordinator:
+        condition: service_healthy
+      fine-tuning:
+        condition: service_healthy
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # RAG Retriever Service - Context retrieval from vector database
+  rag-retriever:
+    build:
+      context: .
+      dockerfile: docker/services/rag-retriever.dockerfile
+    container_name: rag-retriever
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RAG_RETRIEVER_PORT=6007
+      - CHROMA_DB_PATH=/app/chroma_db
+      - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
+      - REDIS_URL=redis://keydb:6379
+    ports:
+      - "6007:6007"
+    depends_on:
+      keydb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    volumes:
+      - ./data/chroma_db:/app/chroma_db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6007/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # RAG Crawler Service - Content crawling and indexing
+  rag-crawler:
+    build:
+      context: .
+      dockerfile: docker/services/rag-crawler.dockerfile
+    container_name: rag-crawler
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RAG_CRAWLER_PORT=6009
+      - CHROMA_DB_PATH=/app/chroma_db
+      - EMBEDDINGS_MODEL_NAME=${EMBEDDINGS_MODEL_NAME:-all-MiniLM-L6-v2}
+      - REDIS_URL=redis://keydb:6379
+    ports:
+      - "6009:6009"
+    depends_on:
+      keydb:
+        condition: service_healthy
+    networks:
+      - bot_network
+    volumes:
+      - ./data/chroma_db:/app/chroma_db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6009/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Discord Handler Services
+
+  # Peter Discord Handler Service
+  peter-discord:
+    build:
+      context: .
+      dockerfile: docker/services/peter-discord.dockerfile
+    container_name: peter-discord
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PETER_DISCORD_PORT=6011
+      - MESSAGE_ROUTER_URL=http://message-router:6005/orchestrate
+      - DISCORD_BOT_TOKEN_PETER=${DISCORD_BOT_TOKEN_PETER}
+    ports:
+      - "6011:6011"
+    depends_on:
+      - message-router
+      - keydb
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6011/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Brian Discord Handler Service
+  brian-discord:
+    build:
+      context: .
+      dockerfile: docker/services/brian-discord.dockerfile
+    container_name: brian-discord
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BRIAN_DISCORD_PORT=6012
+      - MESSAGE_ROUTER_URL=http://message-router:6005/orchestrate
+      - DISCORD_BOT_TOKEN_BRIAN=${DISCORD_BOT_TOKEN_BRIAN}
+    ports:
+      - "6012:6012"
+    depends_on:
+      - message-router
+      - keydb
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6012/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Stewie Discord Handler Service
+  stewie-discord:
+    build:
+      context: .
+      dockerfile: docker/services/stewie-discord.dockerfile
+    container_name: stewie-discord
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - STEWIE_DISCORD_PORT=6013
+      - MESSAGE_ROUTER_URL=http://message-router:6005/orchestrate
+      - DISCORD_BOT_TOKEN_STEWIE=${DISCORD_BOT_TOKEN_STEWIE}
+    ports:
+      - "6013:6013"
+    depends_on:
+      - message-router
+      - keydb
+    networks:
+      - bot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6013/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  keydb_data:
+
+networks:
+  bot_network:
+    driver: bridge 
