@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Test script for local Mistral setup
-Verifies that Ollama and Mistral 4070 are properly configured
+Test script for local LLaMA 3 8B setup
+Verifies that Ollama and LLaMA 3 8B are properly configured
+for the Discord Family Guy Bot system.
+
+Run this BEFORE starting the Docker containers to ensure your setup is working.
 """
 
 import os
+import sys
 import requests
 import json
-import sys
+import time
 from datetime import datetime
+from typing import Dict, Any, Optional
 
 # Configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral-nemo")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:8b-instruct-q5_K_M")
 
 def test_ollama_connection():
     """Test if Ollama is running and accessible."""
@@ -30,8 +35,8 @@ def test_ollama_connection():
         print(f"   Make sure Ollama is running: ollama serve")
         return False
 
-def test_mistral_model_available():
-    """Test if Mistral 4070 model is available."""
+def test_llama_model_available():
+    """Test if LLaMA 3 8B model is available."""
     print(f"🔍 Testing if {OLLAMA_MODEL} model is available...")
     try:
         response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
@@ -54,8 +59,8 @@ def test_mistral_model_available():
         print(f"❌ Failed to check models: {e}")
         return False
 
-def test_mistral_response():
-    """Test Mistral model response generation."""
+def test_llama_response():
+    """Test LLaMA 3 8B model response generation."""
     print(f"🔍 Testing {OLLAMA_MODEL} response generation...")
     
     test_prompt = """You are Peter Griffin from Family Guy. You must stay in character.
@@ -204,7 +209,7 @@ def test_docker_services():
 
 def main():
     """Run all tests."""
-    print("🚀 Discord Family Guy Bot - Local Mistral Setup Test")
+    print("🚀 Discord Family Guy Bot - Local LLaMA 3 8B Setup Test")
     print("=" * 60)
     print(f"📍 Ollama URL: {OLLAMA_BASE_URL}")
     print(f"🤖 Model: {OLLAMA_MODEL}")
@@ -213,8 +218,8 @@ def main():
     
     tests = [
         ("Ollama Connection", test_ollama_connection),
-        ("Mistral Model Availability", test_mistral_model_available),
-        ("Mistral Response Generation", test_mistral_response),
+        ("LLaMA 3 8B Model Availability", test_llama_model_available),
+        ("LLaMA 3 8B Response Generation", test_llama_response),
         ("Character-Specific Responses", test_character_responses),
         ("Docker Services", test_docker_services)
     ]
@@ -249,7 +254,7 @@ def main():
     print(f"Results: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All tests passed! Your local Mistral setup is ready!")
+        print("🎉 All tests passed! Your local LLaMA 3 8B setup is ready!")
         return 0
     else:
         print("⚠️  Some tests failed. Check the output above for issues.")

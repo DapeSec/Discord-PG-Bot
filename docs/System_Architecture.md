@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-This Family Guy Discord Bot system employs a microservices architecture, fully containerized with Docker and orchestrated via Docker Compose. The design prioritizes local LLM processing (using `mistral-nemo` via Ollama), modularity for easier development and scaling, and a clear separation of concerns. This document provides a more in-depth look at each service and its responsibilities than the overview in the main `README.md`.
+This Family Guy Discord Bot system employs a microservices architecture, fully containerized with Docker and orchestrated via Docker Compose. The design prioritizes local LLM processing (using `llama3:8b-instruct-q5_K_M` via Ollama), modularity for easier development and scaling, and a clear separation of concerns. This document provides a more in-depth look at each service and its responsibilities than the overview in the main `README.md`.
 
 **Key Architectural Changes**: 
 - The RAG (Retrieval Augmented Generation) system has been separated into **two dedicated microservices** (`rag-retriever` and `rag-crawler`) to improve separation of concerns, enable independent scaling, optimize for different operational patterns, and provide a cleaner architecture.
@@ -121,7 +121,7 @@ graph TB
 *   **Technology**: Python, Flask, LangChain, Ollama client
 *   **Port**: 6001
 *   **Responsibilities (Centralized AI)**:
-    *   **Ollama Integration**: Single point of access for all LLM operations using `mistral-nemo`
+    *   **Ollama Integration**: Single point of access for all LLM operations using `llama3:8b-instruct-q5_K_M`
     *   **Response Generation**: Processes prompts and generates character-appropriate responses
     *   **Response Caching**: Caches LLM responses in KeyDB to reduce duplicate API calls
     *   **Model Management**: Handles model configuration and optimization
@@ -243,10 +243,10 @@ graph TB
 
 ### 3.13. Ollama (External Service)
 
-*   **Technology**: Ollama with Mistral-Nemo model
+*   **Technology**: Ollama with LLaMA 3 8B model
 *   **Port**: 11434 (external to Docker network)
 *   **Responsibilities**:
-    *   **Local LLM Inference**: Runs Mistral-Nemo model for text generation
+    *   **Local LLM Inference**: Runs LLaMA 3 8B model for text generation
     *   **GPU Acceleration**: Utilizes RTX GPUs for faster inference
     *   **API Access**: Provides HTTP API for LLM operations
 *   **Key Interactions**: LLM Service

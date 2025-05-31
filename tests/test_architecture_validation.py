@@ -11,14 +11,17 @@ import sys
 import traceback
 from typing import Dict, List, Tuple
 
-# Test configuration
-ORCHESTRATOR_URL = "http://localhost:5003"
-RAG_RETRIEVER_URL = "http://localhost:5005"
-RAG_CRAWLER_URL = "http://localhost:5009"
+# Test configuration - Updated for new microservice architecture
+MESSAGE_ROUTER_URL = "http://localhost:6005"
+CONVERSATION_COORDINATOR_URL = "http://localhost:6002"
+QUALITY_CONTROL_URL = "http://localhost:6003"
+LLM_SERVICE_URL = "http://localhost:6001"
+RAG_RETRIEVER_URL = "http://localhost:6007"
+RAG_CRAWLER_URL = "http://localhost:6009"
 TEST_CHANNEL_ID = "1234567890"  # Replace with actual test channel ID
 
 class ArchitectureValidator:
-    """Comprehensive validator for the centralized LLM architecture with RAG microservices."""
+    """Comprehensive validator for the microservice architecture with distributed conversation management."""
     
     def __init__(self):
         self.results = []
@@ -46,12 +49,15 @@ class ArchitectureValidator:
         print("\n🏥 Testing Health Endpoints...")
         
         services = [
-            ("Orchestrator", f"{ORCHESTRATOR_URL}/health"),
+            ("Message Router", f"{MESSAGE_ROUTER_URL}/health"),
+            ("Conversation Coordinator", f"{CONVERSATION_COORDINATOR_URL}/health"),
+            ("Quality Control", f"{QUALITY_CONTROL_URL}/health"),
+            ("LLM Service", f"{LLM_SERVICE_URL}/health"),
             ("RAG Retriever", f"{RAG_RETRIEVER_URL}/health"),
             ("RAG Crawler", f"{RAG_CRAWLER_URL}/health"),
-            ("Peter Bot", "http://localhost:5006/health"),
-            ("Brian Bot", "http://localhost:5007/health"),
-            ("Stewie Bot", "http://localhost:5008/health")
+            ("Peter Discord", "http://localhost:6011/health"),
+            ("Brian Discord", "http://localhost:6012/health"),
+            ("Stewie Discord", "http://localhost:6013/health")
         ]
         
         all_healthy = True
@@ -90,65 +96,61 @@ class ArchitectureValidator:
         return all_healthy
 
     def test_centralized_llm_processing(self) -> bool:
-        """Test centralized LLM character response generation."""
-        print("\n🧠 Testing Centralized LLM Processing...")
+        """Test microservice LLM processing through message router."""
+        print("\n🧠 Testing Microservice LLM Processing...")
         
-        # Test different characters and queries
+        # Test message routing and conversation coordination
         test_cases = [
             {
-                "character": "Peter",
+                "character": "peter",
                 "query": "Tell me a funny story",
                 "expected_traits": ["hehe", "holy", "crap", "time when"],
-                "mention": "<@peter_id>"
             },
             {
-                "character": "Brian", 
+                "character": "brian", 
                 "query": "What do you think about literature?",
                 "expected_traits": ["well", "actually", "intellectual", "fascinating"],
-                "mention": "<@brian_id>"
             },
             {
-                "character": "Stewie",
+                "character": "stewie",
                 "query": "What's your latest invention?",
                 "expected_traits": ["blast", "invention", "world", "plan"],
-                "mention": "<@stewie_id>"
             }
         ]
         
         all_passed = True
         for test_case in test_cases:
             try:
+                # Test conversation flow through message router
                 test_payload = {
-                    "user_query": test_case["query"],
+                    "user_message": test_case["query"],
                     "channel_id": TEST_CHANNEL_ID,
-                    "initiator_bot_name": test_case["character"],
-                    "initiator_mention": test_case["mention"],
-                    "human_user_display_name": "TestUser",
-                    "is_new_conversation": False,
-                    "conversation_session_id": None
+                    "character": test_case["character"],
+                    "user_id": "test_user_123",
+                    "conversation_id": f"test_conversation_{test_case['character']}"
                 }
                 
                 response = requests.post(
-                    f"{ORCHESTRATOR_URL}/orchestrate",
+                    f"{MESSAGE_ROUTER_URL}/orchestrate",
                     json=test_payload,
                     timeout=30
                 )
                 
                 if response.status_code == 200:
                     response_data = response.json()
-                    self.log_result(f"{test_case['character']} Response Generation", True,
-                                  f"Session: {response_data.get('conversation_session_id', 'N/A')}")
+                    self.log_result(f"{test_case['character']} Message Processing", True,
+                                  f"Success: {response_data.get('success', False)}")
                 else:
-                    self.log_result(f"{test_case['character']} Response Generation", False,
+                    self.log_result(f"{test_case['character']} Message Processing", False,
                                   f"Status: {response.status_code}, Response: {response.text[:100]}")
                     all_passed = False
                     
             except requests.exceptions.Timeout:
-                self.log_result(f"{test_case['character']} Response Generation", False,
-                              "Request timed out - LLM might be slow")
+                self.log_result(f"{test_case['character']} Message Processing", False,
+                              "Request timed out - Services might be slow")
                 all_passed = False
             except Exception as e:
-                self.log_result(f"{test_case['character']} Response Generation", False,
+                self.log_result(f"{test_case['character']} Message Processing", False,
                               f"Error: {e}")
                 all_passed = False
                 
@@ -226,40 +228,38 @@ class ArchitectureValidator:
             self.log_result("Vector Store Info", False, f"Error: {e}")
             all_passed = False
         
-        # Test 4: Orchestrator RAG Integration
+        # Test 4: Message Router RAG Integration
         try:
-            # Test orchestrator integration with RAG services
+            # Test message router integration with RAG services
             test_payload = {
-                "user_query": "Tell me about the chicken fight",
+                "user_message": "Tell me about the chicken fight",
                 "channel_id": TEST_CHANNEL_ID,
-                "initiator_bot_name": "Peter",
-                "initiator_mention": "<@peter_id>",
-                "human_user_display_name": "TestUser",
-                "is_new_conversation": False,
-                "conversation_session_id": None
+                "character": "peter",
+                "user_id": "test_user_123",
+                "conversation_id": "test_rag_integration"
             }
             
             response = requests.post(
-                f"{ORCHESTRATOR_URL}/orchestrate",
+                f"{MESSAGE_ROUTER_URL}/orchestrate",
                 json=test_payload,
                 timeout=30
             )
             
             if response.status_code == 200:
-                self.log_result("Orchestrator-RAG Integration", True, 
+                self.log_result("Message Router-RAG Integration", True, 
                               "Successfully integrated RAG context")
             else:
-                self.log_result("Orchestrator-RAG Integration", False, 
+                self.log_result("Message Router-RAG Integration", False, 
                               f"Status: {response.status_code}")
                 all_passed = False
                 
         except Exception as e:
-            self.log_result("Orchestrator-RAG Integration", False, f"Error: {e}")
+            self.log_result("Message Router-RAG Integration", False, f"Error: {e}")
             all_passed = False
         
-        # Test 5: Orchestrator Crawl Trigger
+        # Test 5: Direct RAG Crawl Trigger
         try:
-            # Test orchestrator triggering crawl via RAG Crawler service
+            # Test direct crawl trigger via RAG Crawler service
             crawl_payload = {
                 "start_url": "https://familyguy.fandom.com/wiki/Main_Page",
                 "max_pages": 5,
@@ -267,7 +267,7 @@ class ArchitectureValidator:
             }
             
             response = requests.post(
-                f"{ORCHESTRATOR_URL}/crawl/trigger",
+                f"{RAG_CRAWLER_URL}/crawl/start",
                 json=crawl_payload,
                 timeout=15
             )
@@ -275,18 +275,18 @@ class ArchitectureValidator:
             if response.status_code == 202:  # Accepted
                 data = response.json()
                 status = data.get('status', 'unknown')
-                self.log_result("Orchestrator Crawl Trigger", True, 
+                self.log_result("Direct RAG Crawl Trigger", True, 
                               f"Status: {status}")
             elif response.status_code == 409:  # Conflict - crawl already running
-                self.log_result("Orchestrator Crawl Trigger", True, 
+                self.log_result("Direct RAG Crawl Trigger", True, 
                               "Crawl already in progress")
             else:
-                self.log_result("Orchestrator Crawl Trigger", False, 
+                self.log_result("Direct RAG Crawl Trigger", False, 
                               f"Status: {response.status_code}")
                 all_passed = False
                 
         except Exception as e:
-            self.log_result("Orchestrator Crawl Trigger", False, f"Error: {e}")
+            self.log_result("Direct RAG Crawl Trigger", False, f"Error: {e}")
             all_passed = False
                 
         return all_passed
@@ -297,7 +297,7 @@ class ArchitectureValidator:
         
         all_passed = True
         
-        # Test invalid orchestrator request
+        # Test invalid message router request
         try:
             invalid_payload = {
                 "invalid_field": "test"
@@ -305,7 +305,7 @@ class ArchitectureValidator:
             }
             
             response = requests.post(
-                f"{ORCHESTRATOR_URL}/orchestrate",
+                f"{MESSAGE_ROUTER_URL}/orchestrate",
                 json=invalid_payload,
                 timeout=10
             )
@@ -353,29 +353,29 @@ class ArchitectureValidator:
         print("\n🤖 Testing Bot Discord Interfaces...")
         
         bots = [
-            ("Peter", "http://localhost:5006"),
-            ("Brian", "http://localhost:5007"),
-            ("Stewie", "http://localhost:5008")
+            ("Peter", "http://localhost:6011"),
+            ("Brian", "http://localhost:6012"),
+            ("Stewie", "http://localhost:6013")
         ]
         
         all_passed = True
         for bot_name, bot_url in bots:
             try:
-                # Test character info endpoint
-                response = requests.get(f"{bot_url}/character_info", timeout=10)
+                # Test health endpoint
+                response = requests.get(f"{bot_url}/health", timeout=10)
                 
                 if response.status_code == 200:
                     data = response.json()
-                    character_name = data.get("character_name", "Unknown")
-                    self.log_result(f"{bot_name} Character Info", True, 
-                                  f"Character: {character_name}")
+                    service_name = data.get("service", "Unknown")
+                    self.log_result(f"{bot_name} Health Check", True, 
+                                  f"Service: {service_name}")
                 else:
-                    self.log_result(f"{bot_name} Character Info", False, 
+                    self.log_result(f"{bot_name} Health Check", False, 
                                   f"Status: {response.status_code}")
                     all_passed = False
                     
             except Exception as e:
-                self.log_result(f"{bot_name} Character Info", False, f"Error: {e}")
+                self.log_result(f"{bot_name} Health Check", False, f"Error: {e}")
                 all_passed = False
                 
         return all_passed
@@ -386,84 +386,34 @@ class ArchitectureValidator:
         
         all_passed = True
         
-        # Test 1: Centralized LLM processing (no individual bot LLM endpoints)
+        # Test 1: Distributed microservice processing (no monolithic orchestrator)
         try:
-            # Verify that bots don't have individual LLM endpoints
-            response = requests.post("http://localhost:5006/generate_response", 
-                                   json={"query": "test"}, timeout=5)
+            # Verify that we have separate microservices for different concerns
+            services_to_check = [
+                (MESSAGE_ROUTER_URL, "message routing"),
+                (CONVERSATION_COORDINATOR_URL, "conversation coordination"),
+                (QUALITY_CONTROL_URL, "quality control"),
+                (LLM_SERVICE_URL, "LLM processing")
+            ]
             
-            # Should fail (404) because bots don't have individual LLM processing
-            if response.status_code == 404:
-                self.log_result("Centralized LLM Architecture", True, 
-                              "Bots correctly don't have individual LLM endpoints")
-            else:
-                self.log_result("Centralized LLM Architecture", False, 
-                              "Bots still have individual LLM endpoints")
-                all_passed = False
-                
-        except requests.exceptions.ConnectionError:
-            # This is expected - endpoint shouldn't exist
-            self.log_result("Centralized LLM Architecture", True, 
-                          "Bots correctly don't have individual LLM endpoints")
-        except Exception as e:
-            self.log_result("Centralized LLM Architecture", False, f"Error: {e}")
-            all_passed = False
-        
-        # Test 2: RAG Microservices Separation
-        try:
-            # Verify RAG Retriever and Crawler are separate services
-            retriever_health = requests.get(f"{RAG_RETRIEVER_URL}/health", timeout=5)
-            crawler_health = requests.get(f"{RAG_CRAWLER_URL}/health", timeout=5)
+            all_services_healthy = True
+            for service_url, service_name in services_to_check:
+                response = requests.get(f"{service_url}/health", timeout=5)
+                if response.status_code != 200:
+                    all_services_healthy = False
+                    break
             
-            if retriever_health.status_code == 200 and crawler_health.status_code == 200:
-                retriever_data = retriever_health.json()
-                crawler_data = crawler_health.json()
-                
-                retriever_service = retriever_data.get('service_name', 'Unknown')
-                crawler_service = crawler_data.get('service_name', 'Unknown')
-                
-                if 'Retriever' in retriever_service and 'Crawler' in crawler_service:
-                    self.log_result("RAG Microservices Separation", True, 
-                                  f"Retriever: {retriever_service}, Crawler: {crawler_service}")
-                else:
-                    self.log_result("RAG Microservices Separation", False, 
-                                  "Services not properly separated")
-                    all_passed = False
+            if all_services_healthy:
+                self.log_result("Microservice Architecture", True, 
+                              "All microservices are properly separated and running")
             else:
-                self.log_result("RAG Microservices Separation", False, 
-                              "One or both RAG services not responding")
+                self.log_result("Microservice Architecture", False, 
+                              "Some microservices are not running")
                 all_passed = False
                 
         except Exception as e:
-            self.log_result("RAG Microservices Separation", False, f"Error: {e}")
+            self.log_result("Microservice Architecture", False, f"Error: {e}")
             all_passed = False
-            
-        return all_passed
-
-    def test_organic_conversation_system(self) -> bool:
-        """Test organic conversation initiation system."""
-        print("\n🌱 Testing Organic Conversation System...")
-        
-        try:
-            # Test organic conversation trigger (if available)
-            # This might not be directly testable without waiting for natural triggers
-            
-            # Instead, test that the orchestrator has the necessary endpoints
-            response = requests.get(f"{ORCHESTRATOR_URL}/health", timeout=10)
-            
-            if response.status_code == 200:
-                # Organic conversation system is part of orchestrator
-                self.log_result("Organic Conversation System", True, 
-                              "System integrated in orchestrator")
-                return True
-            else:
-                self.log_result("Organic Conversation System", False, 
-                              "Orchestrator not responding")
-                return False
-                
-        except Exception as e:
-            self.log_result("Organic Conversation System", False, f"Error: {e}")
-            return False
 
     def test_rag_microservices_endpoints(self) -> bool:
         """Test specific RAG microservices endpoints."""
@@ -543,8 +493,7 @@ class ArchitectureValidator:
             ("RAG Microservices Endpoints", self.test_rag_microservices_endpoints),
             ("Error Handling", self.test_error_handling),
             ("Bot Discord Interfaces", self.test_bot_discord_interfaces),
-            ("Architecture Benefits", self.test_architecture_benefits),
-            ("Organic Conversation System", self.test_organic_conversation_system)
+            ("Architecture Benefits", self.test_architecture_benefits)
         ]
         
         suite_results = []

@@ -28,4 +28,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 6003
 
 # Run with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:6003", "--workers", "2", "--timeout", "120", "server:app"] 
+CMD ["gunicorn", "--bind", "0.0.0.0:6003", "--workers", "1", "--timeout", "120", "server:app"] 

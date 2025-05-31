@@ -14,8 +14,9 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 COPY requirements/advanced-services.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
+# Copy source code and utils module
 COPY src/services/conversation_coordinator/ .
+COPY src/utils/ ./utils/
 
 # Change ownership to non-root user
 RUN chown -R appuser:appuser /app
@@ -28,4 +29,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 6002
 
 # Run with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:6002", "--workers", "2", "--timeout", "120", "server:app"] 
+CMD ["gunicorn", "--bind", "0.0.0.0:6002", "--workers", "1", "--timeout", "120", "server:app"] 

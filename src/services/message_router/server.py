@@ -217,6 +217,72 @@ class MessageRouter:
                 "status_code": 503
             }
     
+    def _should_conversation_continue(self, conversation_history: List[Dict[str, Any]], responding_character: str, response_text: str, channel_id: str) -> Dict[str, Any]:
+        """
+        Delegate conversation continuation analysis to the Conversation Coordinator.
+        Returns: {"continue": bool, "reason": str, "suggested_character": str}
+        """
+        try:
+            # Delegate to conversation coordinator for intelligent analysis
+            coordinator_response = self._make_service_request(
+                CONVERSATION_COORDINATOR_URL,
+                "/analyze-conversation-continuation",
+                method="POST",
+                data={
+                    "conversation_history": conversation_history,
+                    "responding_character": responding_character,
+                    "response_text": response_text,
+                    "channel_id": channel_id
+                },
+                timeout=15
+            )
+            
+            if coordinator_response.get("success"):
+                analysis_data = coordinator_response["data"]["analysis"]
+                print(f"🧠 Message Router: Conversation analysis from coordinator - Continue: {analysis_data.get('continue')}, Reason: {analysis_data.get('reason')}")
+                return analysis_data
+            else:
+                print(f"❌ Message Router: Conversation coordinator analysis failed: {coordinator_response.get('error')}")
+                # Fallback to ending conversation if coordinator unavailable
+                return {"continue": False, "reason": "Conversation coordinator unavailable", "suggested_character": None}
+            
+        except Exception as e:
+            print(f"❌ Message Router: Error delegating to conversation coordinator: {e}")
+            return {"continue": False, "reason": f"Analysis delegation error: {str(e)}", "suggested_character": None}
+    
+    def _generate_organic_response(self, responding_character: str, previous_speaker: str, previous_message: str, original_input: str, conversation_history: List[Dict[str, Any]], channel_id: str) -> Optional[str]:
+        """
+        Delegate organic response generation to the Conversation Coordinator.
+        """
+        try:
+            # Delegate to conversation coordinator for intelligent organic response generation
+            coordinator_response = self._make_service_request(
+                CONVERSATION_COORDINATOR_URL,
+                "/generate-organic-response",
+                method="POST",
+                data={
+                    "responding_character": responding_character,
+                    "previous_speaker": previous_speaker,
+                    "previous_message": previous_message,
+                    "original_input": original_input,
+                    "conversation_history": conversation_history,
+                    "channel_id": channel_id
+                },
+                timeout=20
+            )
+            
+            if coordinator_response.get("success"):
+                organic_response = coordinator_response["data"]["response"]
+                print(f"🌱 Message Router: Generated organic response via coordinator for {responding_character}: {organic_response[:100]}...")
+                return organic_response
+            else:
+                print(f"❌ Message Router: Organic response generation failed: {coordinator_response.get('error')}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Message Router: Error delegating organic response generation: {e}")
+            return None
+    
     def orchestrate_conversation(self, conversation_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Orchestrate a complete conversation flow through all microservices.
@@ -295,21 +361,33 @@ class MessageRouter:
                 if rag_response["success"]:
                     rag_context = rag_response["data"].get("context", "")
             
-            # Step 4: Get optimized prompt from fine-tuning service
-            print(f"🔧 Message Router: Getting optimized prompt")
+            # Step 4: Get optimized prompt from fine-tuning service with enhanced context
+            print(f"🔧 Message Router: Getting optimized prompt with conversation context")
+            
+            # Build comprehensive context for fine-tuning
+            conversation_context = {
+                "topic": "general",  # Could be enhanced with topic detection
+                "conversation_context": {
+                    "recent_topics": [],  # Could be populated from conversation history
+                    "last_speaker": conversation_history[-1].get("character") if conversation_history else None,
+                    "conversation_length": len(conversation_history),
+                    "channel_id": channel_id,
+                    "is_continuation": len(conversation_history) > 0
+                },
+                "request_context": {
+                    "user_input": input_text,
+                    "selected_character": selected_character,
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+            
             fine_tuning_response = self._make_service_request(
                 FINE_TUNING_URL,
                 "/optimize-prompt",
                 method="POST",
                 data={
                     "character": selected_character,
-                    "context": {
-                        "topic": "general",  # Could be enhanced with topic detection
-                        "conversation_context": {
-                            "recent_topics": [],  # Could be populated from conversation history
-                            "last_speaker": conversation_history[-1].get("character") if conversation_history else None
-                        }
-                    }
+                    "context": conversation_context
                 }
             )
             
@@ -420,179 +498,72 @@ class MessageRouter:
             except Exception as e:
                 print(f"⚠️ Message Router: Failed to store conversation: {e}")
             
-            # Step 8: Send to fine-tuning service for learning (async)
-            print(f"📊 Message Router: Recording performance for learning")
+            # Step 8: Enhanced performance recording for fine-tuning learning
             try:
-                response_id = f"{channel_id}_{self.request_count}_{datetime.now().timestamp()}"
+                # Create comprehensive performance metrics
+                response_id = f"{channel_id}_{self.request_count}_{int(datetime.now().timestamp())}"
+                
                 performance_metrics = {
                     "quality_score": quality_score,
-                    "authenticity_score": quality_metrics.get("authenticity_score", 8.0),
-                    "engagement_score": quality_metrics.get("engagement_score", 7.0),
-                    "response_time": 2.5  # Placeholder - could be actual measured time
+                    "quality_passed": quality_passed,
+                    "rag_context_length": len(rag_context),
+                    "conversation_turns": len(conversation_history),
+                    "character_used": selected_character,
+                    "prompt_optimized": fine_tuning_response["success"],
+                    "message_type": "direct_response",
+                    "user_input_length": len(input_text),
+                    "response_length": len(generated_response),
+                    "timestamp": datetime.now().isoformat()
                 }
                 
-                self._make_service_request(
+                # Determine feedback type based on quality score and threshold
+                if quality_passed:
+                    user_feedback = "quality_pass_direct"
+                    feedback_details = f"High quality direct response (score: {quality_score})"
+                else:
+                    user_feedback = "quality_concern_direct"
+                    feedback_details = f"Quality concerns in direct response (score: {quality_score})"
+                
+                # Include quality metrics for detailed analysis
+                if quality_response["success"] and "data" in quality_response:
+                    qd = quality_response["data"]
+                    performance_metrics.update({
+                        "authenticity_score": qd.get("metrics", {}).get("authenticity_score", 0),
+                        "engagement_score": qd.get("metrics", {}).get("engagement_score", 0),
+                        "flow_score": qd.get("metrics", {}).get("flow_score", 0),
+                        "quality_issues": qd.get("conversation_flow", {}).get("issues", []),
+                        "quality_strengths": qd.get("conversation_flow", {}).get("strengths", [])
+                    })
+                
+                # Record comprehensive performance data
+                ft_response = self._make_service_request(
                     FINE_TUNING_URL,
                     "/record-performance",
                     method="POST",
                     data={
                         "response_id": response_id,
                         "character": selected_character,
-                        "metrics": performance_metrics
+                        "metrics": performance_metrics,
+                        "user_feedback": user_feedback,
+                        "feedback_details": feedback_details,
+                        "response_text": generated_response,  # Include actual response for learning
+                        "user_input": input_text,  # Include input for context learning
+                        "conversation_context": conversation_history[-3:] if conversation_history else []
                     },
                     timeout=5  # Short timeout for async operation
                 )
-            except Exception as e:
-                print(f"⚠️ Message Router: Fine-tuning recording failed: {e}")
-            
-            # Step 9: Intelligent organic conversation analysis
-            print(f"🧠 Message Router: Using LLM to analyze organic conversation opportunities")
-            
-            # Determine available characters for follow-up (exclude the one that just responded)
-            all_characters = ["peter", "brian", "stewie"]
-            available_for_followup = [char for char in all_characters if char != selected_character.lower()]
-            
-            organic_followup_triggered = False
-            
-            if available_for_followup:
-                # Use intelligent LLM analysis instead of random chance
-                organic_analysis_response = self._make_service_request(
-                    CONVERSATION_COORDINATOR_URL,
-                    "/analyze-organic-opportunity",
-                    method="POST",
-                    data={
-                        "current_message": generated_response,
-                        "current_character": selected_character.lower(),
-                        "conversation_id": channel_id,
-                        "available_characters": available_for_followup
-                    }
-                )
                 
-                if organic_analysis_response["success"]:
-                    analysis = organic_analysis_response["data"]["analysis"]
-                    should_respond = analysis.get("should_respond", False)
-                    recommended_character = analysis.get("selected_character")
-                    confidence = analysis.get("confidence", 0.0)
-                    reasoning = analysis.get("reasoning", "No reason provided")
-                    analysis_type = analysis.get("analysis_type", "unknown")
-                    
-                    print(f"🧠 Message Router: Organic analysis result:")
-                    print(f"   Should respond: {should_respond}")
-                    print(f"   Character: {recommended_character}")
-                    print(f"   Confidence: {confidence:.2f}")
-                    print(f"   Reasoning: {reasoning}")
-                    print(f"   Analysis type: {analysis_type}")
-                    
-                    if should_respond and recommended_character and confidence > 0.3:
-                        print(f"🌱 Message Router: LLM recommends {recommended_character} for organic follow-up (confidence: {confidence:.2f})")
-                        organic_followup_triggered = True
-                        
-                        # Schedule the follow-up response (async way to trigger another bot)
-                        try:
-                            def trigger_followup_response():
-                                # Check if we're already at max concurrent retries
-                                if self.active_retry_threads >= self.max_concurrent_retries:
-                                    print(f"⚠️ Message Router: Max concurrent retries ({self.max_concurrent_retries}) reached, skipping organic followup")
-                                    return
-                                
-                                # Increment active retry counter
-                                self.active_retry_threads += 1
-                                
-                                try:
-                                    # Delay based on confidence (higher confidence = faster response)
-                                    delay = max(2.0, 6.0 - (confidence * 4.0))
-                                    time.sleep(random.uniform(delay, delay + 2))
-                                    
-                                    # Create follow-up conversation context
-                                    followup_history = conversation_history + [{
-                                        "role": "assistant",
-                                        "content": generated_response,
-                                        "character": selected_character,
-                                        "timestamp": datetime.now().isoformat()
-                                    }]
-                                    
-                                    # Define the organic follow-up generation operation
-                                    def generate_organic_followup():
-                                        # Generate follow-up using the selected character
-                                        followup_data = {
-                                            "input_text": f"[ORGANIC_FOLLOWUP] {generated_response}",
-                                            "channel_id": channel_id,
-                                            "user_id": "organic_system",
-                                            "character_name": recommended_character,
-                                            "conversation_history": followup_history
-                                        }
-                                        
-                                        # Make call to generate follow-up
-                                        followup_result = self.orchestrate_conversation(followup_data)
-                                        if not followup_result["success"]:
-                                            raise Exception(f"Follow-up generation failed: {followup_result.get('error')}")
-                                        
-                                        return followup_result["data"]["response"]
-                                    
-                                    # Define validation for organic messages
-                                    def validate_organic_message(followup_response):
-                                        if not followup_response:
-                                            return False
-                                        
-                                        # Send to Discord bot service
-                                        discord_result = self._send_organic_message_to_discord(
-                                            recommended_character, 
-                                            followup_response, 
-                                            channel_id
-                                        )
-                                        
-                                        # Only accept if Discord send was successful
-                                        if discord_result["success"]:
-                                            print(f"✅ Message Router: Organic follow-up sent to Discord by {recommended_character}")
-                                            return True
-                                        else:
-                                            error_details = discord_result.get('error', 'Unknown error')
-                                            status_code = discord_result.get('status_code')
-                                            
-                                            if status_code == 400:
-                                                # Quality control failure - allow retry
-                                                print(f"🔍 Message Router: Organic message failed quality control")
-                                                print(f"   Error: {error_details}")
-                                                return False  # Trigger retry
-                                            else:
-                                                # Other error (503, network, etc.) - don't retry from this level
-                                                print(f"❌ Message Router: Non-retryable error sending organic follow-up: {error_details}")
-                                                return True  # Accept failure without retry
-                                    
-                                    # Use centralized retry for organic follow-up (no retries to prevent explosion)
-                                    success_response = retry_sync(
-                                        operation=generate_organic_followup,
-                                        validation_func=validate_organic_message,
-                                        service_name="Message Router",
-                                        **RetryConfig.ORGANIC_ANALYSIS
-                                    )
-                                    
-                                    if success_response:
-                                        print(f"✅ Message Router: Organic follow-up successfully sent by {recommended_character}")
-                                    else:
-                                        print(f"❌ Message Router: Organic follow-up attempt failed for {recommended_character}")
-                                
-                                finally:
-                                    # Always decrement the active retry counter
-                                    self.active_retry_threads -= 1
-                            
-                            # Start follow-up in background thread
-                            followup_thread = threading.Thread(target=trigger_followup_response, daemon=True)
-                            followup_thread.start()
-                            print(f"🌱 Message Router: Scheduled intelligent organic follow-up by {recommended_character}")
-                            
-                        except Exception as e:
-                            print(f"⚠️ Message Router: Failed to schedule follow-up: {e}")
-                    else:
-                        print(f"🧠 Message Router: LLM analysis determined no organic follow-up needed")
-                        print(f"   Reason: {reasoning}")
-                        
+                if ft_response["success"]:
+                    print(f"📊 Message Router: Performance data recorded for fine-tuning learning")
                 else:
-                    print(f"⚠️ Message Router: Organic analysis failed, falling back to no follow-up")
-                    print(f"   Error: {organic_analysis_response.get('error')}")
-            else:
-                print(f"🌱 Message Router: No other characters available for follow-up")
-
+                    print(f"⚠️ Message Router: Fine-tuning recording failed: {ft_response.get('error', 'Unknown error')}")
+                    
+            except Exception as e:
+                print(f"⚠️ Message Router: Fine-tuning recording error: {e}")
+            
+            # NOTE: Organic conversation analysis is now handled by Discord handlers
+            # after they successfully send their direct responses to prevent race conditions
+            
             return {
                 "success": True,
                 "data": {
@@ -602,7 +573,7 @@ class MessageRouter:
                     "rag_context_length": len(rag_context),
                     "conversation_id": channel_id,
                     "request_id": self.request_count,
-                    "organic_followup_scheduled": organic_followup_triggered
+                    "organic_followup_scheduled": False  # Now handled by Discord handlers
                 }
             }
             
@@ -801,6 +772,7 @@ def handle_organic_notification():
         
         responding_character = data.get("responding_character")
         response_text = data.get("response_text")
+        original_input = data.get("original_input")
         channel_id = data.get("channel_id")
         conversation_history = data.get("conversation_history", [])
         
@@ -812,11 +784,76 @@ def handle_organic_notification():
         
         print(f"🔔 Message Router: Received organic notification from {responding_character} in channel {channel_id}")
         
-        # Return success immediately and handle analysis in background
-        return jsonify({
+        # Return success immediately to avoid blocking the Discord handler
+        response_obj = jsonify({
             "success": True,
             "message": "Organic analysis notification received"
-        }), 200
+        })
+        
+        # Process organic analysis with a small delay in background
+        import threading
+        import time
+        
+        def delayed_organic_analysis():
+            # Small delay to ensure the direct response gets to Discord first
+            time.sleep(2)
+            
+            try:
+                print(f"🧠 Message Router: Delegating organic analysis to conversation coordinator")
+                
+                # Delegate entire organic conversation handling to conversation coordinator
+                coordinator_response = message_router._make_service_request(
+                    CONVERSATION_COORDINATOR_URL,
+                    "/handle-organic-notification",
+                    method="POST",
+                    data={
+                        "event_type": "direct_response_sent",
+                        "responding_character": responding_character,
+                        "response_text": response_text,
+                        "original_input": original_input,
+                        "channel_id": channel_id,
+                        "conversation_history": conversation_history
+                    },
+                    timeout=20
+                )
+                
+                if not coordinator_response.get("success"):
+                    print(f"❌ Message Router: Conversation coordinator analysis failed: {coordinator_response.get('error')}")
+                    return
+                
+                analysis_result = coordinator_response["data"]["analysis"]
+                action = analysis_result.get("action")
+                
+                if action == "conversation_ended":
+                    print(f"🌱 Conversation ended naturally - {analysis_result.get('reason')}")
+                    return
+                elif action == "no_followup":
+                    print(f"🌱 No organic follow-up needed - {analysis_result.get('reason')}")
+                    return
+                elif action == "organic_response_generated":
+                    selected_character = analysis_result.get("character")
+                    organic_response = analysis_result.get("response")
+                    reasoning = analysis_result.get("reasoning")
+                    
+                    print(f"🌱 Coordinator generated organic response for {selected_character}: {reasoning}")
+                    
+                    # Send the organic response to Discord
+                    success = message_router._send_organic_message_to_discord(selected_character, organic_response, channel_id)
+                    if success["success"]:
+                        print(f"🌱 Successfully sent intelligent organic follow-up from {selected_character}")
+                    else:
+                        print(f"❌ Failed to send organic response from {selected_character}")
+                else:
+                    print(f"🌱 Unknown action from coordinator: {action}")
+                    
+            except Exception as e:
+                print(f"❌ Error in delegated organic analysis: {e}")
+        
+        # Start the background thread for delayed analysis
+        analysis_thread = threading.Thread(target=delayed_organic_analysis, daemon=True)
+        analysis_thread.start()
+        
+        return response_obj, 200
             
     except Exception as e:
         print(f"❌ Message Router: Exception in organic notification handler: {e}")

@@ -1,0 +1,8 @@
+{
+  "conversation_history": [
+    {"character": "peter", "content": "Pizza is the best!"}
+  ],
+  "responding_character": "peter",
+  "response_text": "Pizza is amazing!",
+  "channel_id": "test"
+} 

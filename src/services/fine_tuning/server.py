@@ -94,39 +94,123 @@ class FineTuningService:
         return fallback_prompts.get(character, f"You are {character} from Family Guy. Respond as {character} would:")
 
     def _get_rag_context(self, character: str, query: str = None) -> str:
-        """Get dynamic RAG context to add variety to prompts"""
+        """Get dynamic RAG context to add variety to prompts with enhanced reliability"""
         try:
             # Create character-specific queries for RAG retrieval
             if not query:
                 query_options = {
-                    'peter': ["Peter Griffin funny moments", "Peter Griffin at work", "Peter Griffin family", "Peter Griffin jokes"],
-                    'brian': ["Brian Griffin intellectual", "Brian Griffin writing", "Brian Griffin culture", "Brian Griffin politics"], 
-                    'stewie': ["Stewie Griffin genius", "Stewie Griffin inventions", "Stewie Griffin evil plans", "Stewie Griffin British"]
+                    'peter': [
+                        "Peter Griffin funny moments", 
+                        "Peter Griffin at work brewery", 
+                        "Peter Griffin family interactions", 
+                        "Peter Griffin eating food",
+                        "Peter Griffin watching TV",
+                        "Peter Griffin with friends"
+                    ],
+                    'brian': [
+                        "Brian Griffin intellectual discussions", 
+                        "Brian Griffin writing novel", 
+                        "Brian Griffin culture politics", 
+                        "Brian Griffin philosophy",
+                        "Brian Griffin pretentious moments",
+                        "Brian Griffin sophisticated conversations"
+                    ], 
+                    'stewie': [
+                        "Stewie Griffin genius inventions", 
+                        "Stewie Griffin evil plans", 
+                        "Stewie Griffin British accent", 
+                        "Stewie Griffin condescending remarks",
+                        "Stewie Griffin sophisticated vocabulary",
+                        "Stewie Griffin family dynamics"
+                    ]
                 }
                 
-                character_queries = query_options.get(character, [f"{character} Griffin"])
+                character_queries = query_options.get(character, [f"{character} Griffin family guy"])
                 query = random.choice(character_queries)
             
-            # Make request to RAG retriever
+            # Make enhanced request to RAG retriever
+            rag_payload = {
+                "query": query, 
+                "num_results": 2,
+                "min_score": 0.3  # Minimum relevance score if supported
+            }
+            
+            # Add character filter if the RAG service supports it
+            if character in ['peter', 'brian', 'stewie']:
+                rag_payload["character_filter"] = character
+            
             response = requests.post(
                 f"{RAG_RETRIEVER_URL}/retrieve",
-                json={"query": query, "num_results": 2},
-                timeout=5
+                json=rag_payload,
+                timeout=6,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": f"FineTuning-{character}"
+                }
             )
             
             if response.status_code == 200:
                 data = response.json()
                 rag_context = data.get("context", "")
-                if rag_context:
+                
+                if rag_context and len(rag_context.strip()) > 10:
+                    # Clean and format the context
+                    cleaned_context = self._clean_rag_context(rag_context, character)
+                    
                     # Truncate to reasonable length for prompt
-                    return rag_context[:300] + "..." if len(rag_context) > 300 else rag_context
+                    if len(cleaned_context) > 350:
+                        cleaned_context = cleaned_context[:350] + "..."
+                    
+                    logger.info(f"🔍 Fine-tuning: Retrieved RAG context for {character} query: '{query[:50]}...'")
+                    return cleaned_context
+                else:
+                    logger.info(f"🔍 Fine-tuning: Empty RAG context for {character}, using fallback")
+            else:
+                logger.warning(f"RAG retrieval failed for {character}: HTTP {response.status_code}")
             
-            logger.warning(f"RAG retrieval failed for {character}: {response.status_code}")
-            return ""
+            # Fallback to character-specific context if RAG fails
+            return self._get_fallback_context(character)
             
+        except requests.exceptions.Timeout:
+            logger.warning(f"RAG retrieval timeout for {character}, using fallback")
+            return self._get_fallback_context(character)
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"RAG service unavailable for {character}, using fallback")
+            return self._get_fallback_context(character)
         except Exception as e:
             logger.warning(f"Error fetching RAG context for {character}: {e}")
-            return ""
+            return self._get_fallback_context(character)
+
+    def _clean_rag_context(self, rag_context: str, character: str) -> str:
+        """Clean and format RAG context for prompt use"""
+        try:
+            # Remove excessive whitespace and newlines
+            cleaned = " ".join(rag_context.split())
+            
+            # Remove any XML/HTML-like tags if present
+            import re
+            cleaned = re.sub(r'<[^>]+>', '', cleaned)
+            
+            # Ensure it's relevant to the character
+            if character.lower() not in cleaned.lower():
+                # If character name not mentioned, add context
+                cleaned = f"In {character.title()}'s style: {cleaned}"
+            
+            return cleaned.strip()
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning RAG context: {e}")
+            return rag_context[:300]  # Fallback to truncated original
+
+    def _get_fallback_context(self, character: str) -> str:
+        """Get fallback context when RAG service is unavailable"""
+        fallback_contexts = {
+            'peter': "Peter Griffin loves food, beer, and TV. He's impulsive and childlike with simple observations.",
+            'brian': "Brian Griffin is intellectual and pretentious, often referencing culture, politics, and literature.",
+            'stewie': "Stewie Griffin is a sophisticated baby genius with advanced vocabulary and condescending remarks."
+        }
+        
+        return fallback_contexts.get(character, f"{character.title()} Griffin from Family Guy has a distinctive personality.")
 
     def create_ab_experiment(self, experiment_name: str, variants: List[Dict], 
                             traffic_split: Dict[str, float] = None) -> Dict:
@@ -192,17 +276,22 @@ class FineTuningService:
         }
 
     def optimize_prompt(self, character: str, context: Dict, performance_feedback: Dict = None) -> Dict:
-        """Generate optimized prompt based on context and performance"""
+        """Generate optimized prompt based on context, retry history, and performance feedback with enhanced RAG and character config integration"""
         
         # Get current base prompt from character-config service
         base_prompt = self._get_base_prompt(character)
         if not base_prompt:
             return {'error': f'Unable to fetch configuration for character: {character}'}
         
+        # Get current character configuration for additional context
+        character_config = self._get_current_character_config(character)
+        
         # Analyze context to determine optimizations
         message_topic = context.get('topic', 'general')
         user_emotion = context.get('emotion')
         conversation_context = context.get('conversation_context', {})
+        request_context = context.get('request_context', {})
+        retry_optimization = context.get('retry_optimization', False)
         
         # Start with the current character prompt
         optimized_prompt = base_prompt
@@ -210,13 +299,37 @@ class FineTuningService:
         # Add context-based enhancements
         context_additions = []
         
+        # Enhanced RAG integration - get relevant context for character and topic
+        rag_context = self._get_enhanced_rag_context(character, context, retry_optimization)
+        if rag_context:
+            context_additions.append(f"RELEVANT CONTEXT: {rag_context}")
+            logger.info(f"🔍 Fine-tuning: Added RAG context for {character}")
+        
+        # Handle retry optimization - learn from failed attempts
+        if retry_optimization and 'failed_attempts' in conversation_context:
+            failed_attempts = conversation_context.get('failed_attempts', [])
+            if failed_attempts:
+                logger.info(f"🔄 Fine-tuning: Optimizing for retry after {len(failed_attempts)} failed attempts")
+                
+                # Use RAG to get better examples for retry guidance
+                retry_guidance = self._generate_enhanced_retry_guidance(character, failed_attempts, rag_context)
+                if retry_guidance:
+                    context_additions.append(f"RETRY OPTIMIZATION: {retry_guidance}")
+        
+        # Character config-based enhancements
+        if character_config:
+            config_enhancements = self._generate_config_based_enhancements(character, character_config, context)
+            if config_enhancements:
+                context_additions.extend(config_enhancements)
+        
+        # Standard context enhancements with RAG support
         if user_emotion and user_emotion != 'neutral':
-            emotion_enhancement = self._get_emotion_enhancement(character, user_emotion)
+            emotion_enhancement = self._get_emotion_enhancement_with_rag(character, user_emotion)
             if emotion_enhancement:
                 context_additions.append(emotion_enhancement)
         
         if message_topic != 'general':
-            topic_enhancement = self._get_topic_enhancement(character, message_topic)
+            topic_enhancement = self._get_topic_enhancement_with_rag(character, message_topic)
             if topic_enhancement:
                 context_additions.append(topic_enhancement)
         
@@ -228,32 +341,68 @@ class FineTuningService:
         
         # Add conversation context if available
         if conversation_context.get('recent_topics'):
-            context_addition = self._generate_context_addition(character, conversation_context)
+            context_addition = self._generate_context_addition_with_rag(character, conversation_context)
             if context_addition:
                 context_additions.append(context_addition)
         
-        # ADD DYNAMIC RAG CONTEXT TO PREVENT IDENTICAL RESPONSES
-        rag_context = self._get_rag_context(character)
-        if rag_context:
-            context_additions.append(f"Reference this for inspiration: {rag_context}")
+        # Organic response specific optimizations with RAG
+        if message_topic == 'organic_follow_up':
+            organic_enhancement = self._get_organic_response_enhancement_with_rag(character, conversation_context)
+            if organic_enhancement:
+                context_additions.append(organic_enhancement)
         
-        # Combine base prompt with additions
+        # Apply conversation length optimizations
+        conversation_length = conversation_context.get('conversation_length', 0)
+        if conversation_length > 5:
+            # Use RAG to find examples of conversation variety
+            variety_enhancement = self._get_conversation_variety_enhancement(character, conversation_length)
+            if variety_enhancement:
+                context_additions.append(variety_enhancement)
+        
+        # Quality-based optimizations from recent performance data with RAG examples
+        recent_performance = self._get_recent_character_performance(character)
+        if recent_performance:
+            quality_optimization = self._generate_quality_optimization_with_rag(character, recent_performance)
+            if quality_optimization:
+                context_additions.append(quality_optimization)
+        
+        # Combine all enhancements
         if context_additions:
-            optimized_prompt += "\n\nAdditional context: " + " ".join(context_additions)
+            enhancement_text = "\n\nCONTEXT ENHANCEMENTS:\n" + "\n".join(f"- {addition}" for addition in context_additions)
+            optimized_prompt = optimized_prompt + enhancement_text
         
-        optimization_metadata = {
-            'character': character,
-            'base_prompt_source': 'character-config-service',
-            'optimizations_applied': len(context_additions),
-            'context_enhanced': bool(conversation_context),
-            'rag_context_added': bool(rag_context),
-            'timestamp': datetime.now().isoformat()
-        }
+        # Calculate confidence based on available context and optimizations
+        confidence_factors = []
+        if context_additions:
+            confidence_factors.append(0.2)  # Base for having enhancements
+        if conversation_context:
+            confidence_factors.append(0.3)  # Conversation context available
+        if performance_feedback:
+            confidence_factors.append(0.3)  # Performance data available
+        if retry_optimization:
+            confidence_factors.append(0.2)  # Retry optimization applied
+        if rag_context:
+            confidence_factors.append(0.2)  # RAG context available
+        if character_config:
+            confidence_factors.append(0.1)  # Character config enhanced
+        
+        confidence = min(1.0, sum(confidence_factors))
+        
+        logger.info(f"🎯 Fine-tuning: Generated optimized prompt for {character} (confidence: {confidence:.2f})")
+        if retry_optimization:
+            logger.info(f"   🔄 Retry optimization applied with {len(context_additions)} enhancements")
+        if rag_context:
+            logger.info(f"   🔍 RAG context integrated for enhanced optimization")
         
         return {
             'optimized_prompt': optimized_prompt,
-            'metadata': optimization_metadata,
-            'confidence': self._calculate_optimization_confidence(context, performance_feedback)
+            'confidence': confidence,
+            'enhancements_applied': len(context_additions),
+            'character': character,
+            'retry_optimization': retry_optimization,
+            'rag_enhanced': bool(rag_context),
+            'config_enhanced': bool(character_config),
+            'timestamp': datetime.now().isoformat()
         }
 
     def _get_emotion_enhancement(self, character: str, emotion: str) -> str:
@@ -721,6 +870,463 @@ class FineTuningService:
             "Use alternative phrasing."
         ])
 
+    def _generate_retry_guidance(self, character: str, most_common_issue: str, failed_attempts: List[Dict]) -> str:
+        """Generate specific guidance to address the most common failure pattern"""
+        
+        # Character-specific guidance for common issues
+        character_guidance = {
+            'peter': {
+                'too_intellectual': "Keep it simple and childish like Peter - use basic words and silly observations",
+                'too_serious': "Add Peter's childlike humor and random tangents about food or TV",
+                'out_of_character': "Remember Peter is impulsive, loves food/beer, and makes random observations",
+                'too_long': "Keep it short like Peter - he doesn't think deeply, just reacts",
+                'repetitive': "Try a different Peter reaction - maybe reference food, TV, or family instead"
+            },
+            'brian': {
+                'too_simple': "Add Brian's intellectual vocabulary and cultural references",
+                'missing_pretension': "Include Brian's condescending tone and sophisticated observations",
+                'out_of_character': "Remember Brian is pretentious, political, and likes to show off his intelligence",
+                'too_long': "Keep Brian concise but intellectual - he's smart but not windy",
+                'repetitive': "Try a different Brian angle - politics, culture, or correcting someone instead"
+            },
+            'stewie': {
+                'not_sophisticated': "Use Stewie's advanced vocabulary and dramatic flair",
+                'missing_evil_genius': "Add Stewie's condescending and slightly sinister tone",
+                'out_of_character': "Remember Stewie is a sophisticated baby with evil genius tendencies",
+                'too_casual': "Make it more formal and dramatic like Stewie's speech patterns",
+                'repetitive': "Try a different Stewie approach - maybe world domination plans or condescending remarks"
+            }
+        }
+        
+        guidance = character_guidance.get(character, {}).get(most_common_issue)
+        if guidance:
+            return guidance
+        
+        # Generic guidance based on issue type
+        generic_guidance = {
+            'too_long': "Keep responses shorter and more conversational",
+            'repetitive': "Try a completely different approach or angle",
+            'out_of_character': f"Stay true to {character.title()}'s personality and speech patterns",
+            'poor_flow': "Make the response feel more natural and conversational",
+            'low_engagement': "Add more personality and character-specific humor"
+        }
+        
+        return generic_guidance.get(most_common_issue, "Try a different approach to better match the character")
+
+    def _generate_enhanced_retry_guidance(self, character: str, failed_attempts: List[Dict], rag_context: str = None) -> str:
+        """Generate enhanced retry guidance using failed attempts analysis and RAG context"""
+        
+        # Analyze common failure patterns (original logic)
+        common_issues = []
+        for attempt in failed_attempts:
+            issues = attempt.get('issues', [])
+            common_issues.extend(issues)
+        
+        if not common_issues:
+            return self._generate_retry_guidance(character, "general", failed_attempts)
+        
+        # Find most common issue
+        issue_counts = {}
+        for issue in common_issues:
+            issue_counts[issue] = issue_counts.get(issue, 0) + 1
+        
+        most_common_issue = max(issue_counts, key=issue_counts.get)
+        
+        # Get base guidance
+        base_guidance = self._generate_retry_guidance(character, most_common_issue, failed_attempts)
+        
+        # Enhance with RAG context if available
+        if rag_context:
+            try:
+                # Use RAG context to provide specific examples
+                rag_enhancement = f"Use examples from this context: {rag_context[:200]}"
+                enhanced_guidance = f"{base_guidance} | {rag_enhancement}"
+                return enhanced_guidance
+            except Exception as e:
+                logger.warning(f"Error enhancing retry guidance with RAG: {e}")
+        
+        return base_guidance
+
+    def _get_emotion_enhancement_with_rag(self, character: str, emotion: str) -> str:
+        """Generate emotion-based enhancement with RAG support"""
+        
+        # Get base emotion enhancement
+        base_enhancement = self._get_emotion_enhancement(character, emotion)
+        
+        # Try to get RAG examples for emotion
+        try:
+            emotion_query = f"{character} Griffin {emotion} emotional response"
+            rag_context = self._get_rag_context(character, emotion_query)
+            
+            if rag_context:
+                rag_snippet = rag_context[:150].strip()
+                enhanced = f"{base_enhancement} | EXAMPLE STYLE: {rag_snippet}"
+                return enhanced
+            
+        except Exception as e:
+            logger.warning(f"Error enhancing emotion with RAG for {character}: {e}")
+        
+        return base_enhancement
+
+    def _get_topic_enhancement_with_rag(self, character: str, topic: str) -> str:
+        """Generate topic-based enhancement with RAG support"""
+        
+        # Get base topic enhancement
+        base_enhancement = self._get_topic_enhancement(character, topic)
+        
+        # Try to get RAG examples for topic
+        try:
+            topic_query = f"{character} Griffin talking about {topic}"
+            rag_context = self._get_rag_context(character, topic_query)
+            
+            if rag_context:
+                rag_snippet = rag_context[:150].strip()
+                enhanced = f"{base_enhancement} | REFERENCE STYLE: {rag_snippet}"
+                return enhanced
+            
+        except Exception as e:
+            logger.warning(f"Error enhancing topic with RAG for {character}: {e}")
+        
+        return base_enhancement
+
+    def _generate_context_addition_with_rag(self, character: str, conversation_context: Dict) -> str:
+        """Generate context-aware additions with RAG support"""
+        
+        # Get base context addition
+        base_addition = self._generate_context_addition(character, conversation_context)
+        
+        # Try to get RAG examples for conversation flow
+        try:
+            recent_topics = conversation_context.get('recent_topics', [])
+            if recent_topics:
+                flow_query = f"{character} Griffin conversation about {' '.join(recent_topics[-2:])}"
+                rag_context = self._get_rag_context(character, flow_query)
+                
+                if rag_context:
+                    rag_snippet = rag_context[:120].strip()
+                    enhanced = f"{base_addition} | CONVERSATION FLOW: {rag_snippet}"
+                    return enhanced
+            
+        except Exception as e:
+            logger.warning(f"Error enhancing context with RAG for {character}: {e}")
+        
+        return base_addition
+
+    def _get_organic_response_enhancement_with_rag(self, character: str, conversation_context: Dict) -> str:
+        """Generate organic response enhancement with RAG support"""
+        
+        # Get base organic enhancement
+        base_enhancement = self._get_organic_response_enhancement(character, conversation_context)
+        
+        # Try to get RAG examples for organic responses
+        try:
+            previous_speaker = conversation_context.get('previous_speaker', '')
+            if previous_speaker:
+                organic_query = f"{character} Griffin interrupting {previous_speaker} organic response"
+                rag_context = self._get_rag_context(character, organic_query)
+                
+                if rag_context:
+                    rag_snippet = rag_context[:130].strip()
+                    enhanced = f"{base_enhancement} | ORGANIC EXAMPLE: {rag_snippet}"
+                    return enhanced
+            
+        except Exception as e:
+            logger.warning(f"Error enhancing organic response with RAG for {character}: {e}")
+        
+        return base_enhancement
+
+    def _get_conversation_variety_enhancement(self, character: str, conversation_length: int) -> str:
+        """Get conversation variety enhancement using RAG examples"""
+        
+        try:
+            # Query for variety examples
+            variety_query = f"{character} Griffin different response styles variety"
+            rag_context = self._get_rag_context(character, variety_query)
+            
+            if rag_context:
+                rag_snippet = rag_context[:200].strip()
+                return f"CONVERSATION VARIETY: Vary your response style to avoid repetition. Examples: {rag_snippet}"
+            else:
+                # Fallback to basic variety guidance
+                return "CONVERSATION FLOW: Vary your response style and avoid repeating previous patterns from this conversation"
+            
+        except Exception as e:
+            logger.warning(f"Error getting variety enhancement for {character}: {e}")
+            return "CONVERSATION FLOW: Vary your response style and avoid repeating previous patterns from this conversation"
+
+    def _generate_quality_optimization_with_rag(self, character: str, performance_data: Dict) -> str:
+        """Generate quality optimization with RAG examples"""
+        
+        # Get base quality optimization
+        base_optimization = self._generate_quality_optimization(character, performance_data)
+        
+        # Try to get RAG examples for high-quality responses
+        try:
+            avg_quality = performance_data.get('average_quality', 85)
+            
+            if avg_quality < 75:
+                # Get examples of high-quality responses
+                quality_query = f"{character} Griffin high quality authentic response"
+                rag_context = self._get_rag_context(character, quality_query)
+                
+                if rag_context:
+                    rag_snippet = rag_context[:150].strip()
+                    enhanced = f"{base_optimization} | QUALITY EXAMPLE: {rag_snippet}"
+                    return enhanced
+            
+        except Exception as e:
+            logger.warning(f"Error enhancing quality optimization with RAG for {character}: {e}")
+        
+        return base_optimization
+
+    def _get_organic_response_enhancement(self, character: str, conversation_context: Dict) -> str:
+        """Generate specific enhancements for organic responses (base version)"""
+        
+        previous_speaker = conversation_context.get('previous_speaker', '')
+        
+        # Character-specific organic response patterns
+        organic_patterns = {
+            'peter': {
+                'interrupt_style': "Jump in with a random observation or food-related comment",
+                'reaction_style': "React with simple excitement, confusion, or a random tangent",
+                'relationship_dynamic': "Be casual and friendly, maybe interrupt with something silly"
+            },
+            'brian': {
+                'interrupt_style': "Interject with an intellectual correction or cultural reference",
+                'reaction_style': "Provide a sophisticated counterpoint or analysis",
+                'relationship_dynamic': "Show intellectual superiority while being helpful"
+            },
+            'stewie': {
+                'interrupt_style': "Dramatically interrupt with condescending observations",
+                'reaction_style': "Make a sophisticated or slightly sinister comment",
+                'relationship_dynamic': "Be condescending but engaged in the conversation"
+            }
+        }
+        
+        patterns = organic_patterns.get(character, {})
+        
+        enhancement_parts = []
+        if patterns.get('interrupt_style'):
+            enhancement_parts.append(f"ORGANIC STYLE: {patterns['interrupt_style']}")
+        
+        if patterns.get('reaction_style'):
+            enhancement_parts.append(f"NATURAL REACTION: {patterns['reaction_style']}")
+        
+        # Add speaker-specific dynamics
+        if previous_speaker and previous_speaker != character:
+            enhancement_parts.append(f"RESPONDING TO {previous_speaker.upper()}: React naturally to what they just said")
+        
+        return " | ".join(enhancement_parts) if enhancement_parts else ""
+
+    def _get_recent_character_performance(self, character: str) -> Dict:
+        """Get recent performance data for the character"""
+        
+        # For now, return recent performance from our tracking
+        recent_responses = []
+        for response_data in list(self.response_performance[character])[-10:]:  # Last 10 responses
+            recent_responses.append(response_data)
+        
+        if not recent_responses:
+            return {}
+        
+        # Calculate averages
+        avg_quality = sum(r.get('quality_score', 0) for r in recent_responses) / len(recent_responses)
+        avg_engagement = sum(r.get('engagement_score', 0) for r in recent_responses) / len(recent_responses)
+        
+        # Count recent failures
+        recent_failures = sum(1 for r in recent_responses if not r.get('quality_passed', True))
+        
+        return {
+            'average_quality': avg_quality,
+            'average_engagement': avg_engagement,
+            'recent_failures': recent_failures,
+            'total_recent_responses': len(recent_responses),
+            'failure_rate': recent_failures / len(recent_responses) if recent_responses else 0
+        }
+
+    def _generate_quality_optimization(self, character: str, performance_data: Dict) -> str:
+        """Generate quality-focused optimizations based on recent performance (base version)"""
+        
+        avg_quality = performance_data.get('average_quality', 85)
+        failure_rate = performance_data.get('failure_rate', 0)
+        
+        optimizations = []
+        
+        # Quality-based optimizations
+        if avg_quality < 75:
+            optimizations.append(f"QUALITY FOCUS: Recent responses averaged {avg_quality:.1f}% - focus on character authenticity and engagement")
+        
+        if failure_rate > 0.3:  # More than 30% failure rate
+            optimizations.append(f"RELIABILITY FOCUS: {failure_rate*100:.0f}% recent failures - prioritize character consistency and natural flow")
+        
+        # Character-specific quality tips
+        character_quality_tips = {
+            'peter': "Ensure childlike simplicity and authentic Peter vocabulary",
+            'brian': "Maintain intellectual tone without being overly verbose",
+            'stewie': "Keep sophisticated vocabulary while staying conversational"
+        }
+        
+        if character in character_quality_tips:
+            optimizations.append(f"CHARACTER QUALITY: {character_quality_tips[character]}")
+        
+        return " | ".join(optimizations) if optimizations else ""
+
+    def _should_trigger_optimization(self, character: str) -> bool:
+        """Determine if optimization should be triggered based on recent performance"""
+        
+        character_responses = self.response_performance[character]
+        if len(character_responses) < 5:  # Need minimum data
+            return False
+        
+        # Analyze recent performance (last 10 responses)
+        recent_responses = character_responses[-10:]
+        
+        quality_scores = [r.get('quality_score', 0) for r in recent_responses]
+        quality_passes = [r.get('quality_passed', True) for r in recent_responses]
+        
+        if not quality_scores:
+            return False
+        
+        # Calculate metrics
+        avg_quality = sum(quality_scores) / len(quality_scores)
+        pass_rate = sum(quality_passes) / len(quality_passes)
+        recent_failures = sum(1 for passed in quality_passes if not passed)
+        
+        # Trigger optimization if:
+        # 1. Average quality is below 75%
+        # 2. Pass rate is below 80%
+        # 3. More than 3 failures in last 10 responses
+        should_optimize = (
+            avg_quality < 75 or 
+            pass_rate < 0.8 or 
+            recent_failures > 3
+        )
+        
+        if should_optimize:
+            logger.info(f"🎯 Optimization trigger for {character}: avg_quality={avg_quality:.1f}, pass_rate={pass_rate:.1f}, failures={recent_failures}")
+        
+        return should_optimize
+
+    def _get_enhanced_rag_context(self, character: str, context: Dict, retry_optimization: bool = False) -> str:
+        """Get enhanced RAG context based on character, topic, and optimization needs"""
+        try:
+            # Build a comprehensive query for RAG retrieval
+            query_parts = []
+            
+            # Character-specific query base
+            query_parts.append(f"{character} Griffin")
+            
+            # Add topic if available
+            topic = context.get('topic', '')
+            if topic and topic != 'general':
+                query_parts.append(topic)
+            
+            # Add conversation context
+            conversation_context = context.get('conversation_context', {})
+            recent_topics = conversation_context.get('recent_topics', [])
+            if recent_topics:
+                query_parts.extend(recent_topics[-2:])  # Last 2 topics
+            
+            # Add retry-specific context if needed
+            if retry_optimization:
+                query_parts.append("examples")
+                query_parts.append("good responses")
+            
+            # Add emotion context
+            emotion = context.get('emotion')
+            if emotion and emotion != 'neutral':
+                query_parts.append(emotion)
+            
+            # Create the query
+            rag_query = " ".join(query_parts[:5])  # Limit to avoid too long queries
+            
+            # Make request to RAG retriever with enhanced context
+            response = requests.post(
+                f"{RAG_RETRIEVER_URL}/retrieve",
+                json={
+                    "query": rag_query, 
+                    "num_results": 3,
+                    "character_filter": character  # If supported by RAG service
+                },
+                timeout=8
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                rag_context = data.get("context", "")
+                if rag_context:
+                    # Truncate and clean up for prompt use
+                    cleaned_context = rag_context[:400].strip()
+                    if len(rag_context) > 400:
+                        cleaned_context += "..."
+                    
+                    logger.info(f"🔍 Fine-tuning: Retrieved RAG context for query: {rag_query}")
+                    return cleaned_context
+            
+            # Fallback to character-specific RAG if main query fails
+            return self._get_rag_context(character, rag_query)
+            
+        except Exception as e:
+            logger.warning(f"Enhanced RAG retrieval failed for {character}: {e}")
+            # Fallback to basic RAG
+            return self._get_rag_context(character)
+
+    def _generate_config_based_enhancements(self, character: str, character_config: Dict, context: Dict) -> List[str]:
+        """Generate enhancements based on character configuration from character-config service"""
+        enhancements = []
+        
+        try:
+            # Extract useful config elements
+            llm_settings = character_config.get('llm_settings', {})
+            character_traits = character_config.get('character_traits', {})
+            speaking_style = character_config.get('speaking_style', {})
+            
+            # Temperature-based enhancements
+            temperature = llm_settings.get('temperature', 0.7)
+            if temperature < 0.5:
+                enhancements.append("CONSISTENCY FOCUS: Maintain very consistent character voice and responses")
+            elif temperature > 0.8:
+                enhancements.append("CREATIVITY BOOST: Feel free to be more creative and spontaneous in your response")
+            
+            # Max tokens guidance
+            max_tokens = llm_settings.get('max_tokens', 150)
+            if max_tokens < 100:
+                enhancements.append("BREVITY: Keep responses short and punchy")
+            elif max_tokens > 200:
+                enhancements.append("ELABORATION: You can provide more detailed and elaborate responses")
+            
+            # Character traits integration
+            if character_traits:
+                if character_traits.get('humor_level', 0) > 0.8:
+                    enhancements.append("HUMOR EMPHASIS: Prioritize humor and comedic timing in your response")
+                if character_traits.get('intelligence_level', 0) > 0.8:
+                    enhancements.append("INTELLIGENCE SHOWCASE: Feel free to display your character's intelligence")
+                if character_traits.get('aggression_level', 0) > 0.6:
+                    enhancements.append("ASSERTIVENESS: Be more direct and assertive in your communication")
+            
+            # Speaking style enhancements
+            if speaking_style:
+                vocabulary_level = speaking_style.get('vocabulary_level', 'normal')
+                if vocabulary_level == 'simple':
+                    enhancements.append("SIMPLE LANGUAGE: Use simple, everyday language")
+                elif vocabulary_level == 'sophisticated':
+                    enhancements.append("SOPHISTICATED VOCABULARY: Use more advanced and refined language")
+                
+                pace = speaking_style.get('pace', 'normal')
+                if pace == 'fast':
+                    enhancements.append("ENERGETIC PACE: Respond with energy and quick-paced dialogue")
+                elif pace == 'slow':
+                    enhancements.append("THOUGHTFUL PACE: Take your time with more deliberate responses")
+            
+            if enhancements:
+                logger.info(f"🔧 Fine-tuning: Added {len(enhancements)} config-based enhancements for {character}")
+            
+            return enhancements
+            
+        except Exception as e:
+            logger.warning(f"Error generating config-based enhancements for {character}: {e}")
+            return []
+
 # Initialize service
 fine_tuning_service = FineTuningService()
 
@@ -759,30 +1365,157 @@ def optimize_prompt():
 
 @app.route('/record-performance', methods=['POST'])
 def record_performance():
-    """Record response performance for learning"""
+    """Record response performance metrics for learning"""
     try:
         data = request.get_json()
         
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
         required_fields = ['response_id', 'character', 'metrics']
-        if not data or not all(field in data for field in required_fields):
-            return jsonify({'error': f'Missing required fields: {required_fields}'}), 400
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {missing_fields}'}), 400
         
         response_id = data['response_id']
         character = data['character']
         metrics = data['metrics']
-        user_feedback = data.get('user_feedback')
+        user_feedback = data.get('user_feedback', 'neutral')
+        feedback_details = data.get('feedback_details', '')
+        response_text = data.get('response_text', '')
+        user_input = data.get('user_input', '')
+        conversation_context = data.get('conversation_context', [])
         
-        result = fine_tuning_service.record_response_performance(
-            response_id, character, metrics, user_feedback
-        )
+        # Record comprehensive performance data
+        performance_record = {
+            'response_id': response_id,
+            'character': character,
+            'timestamp': datetime.now().isoformat(),
+            'metrics': metrics,
+            'user_feedback': user_feedback,
+            'feedback_details': feedback_details,
+            'response_text': response_text[:500],  # Truncate for storage
+            'user_input': user_input[:200],
+            'conversation_context': conversation_context,
+            'quality_passed': metrics.get('quality_passed', True),
+            'quality_score': metrics.get('quality_score', 0)
+        }
         
-        logger.info(f"Performance recorded for {character}: {response_id}")
+        # Store in character-specific performance tracking
+        fine_tuning_service.response_performance[character].append(performance_record)
         
-        return jsonify(result)
+        # Keep only recent records (last 100 per character)
+        if len(fine_tuning_service.response_performance[character]) > 100:
+            fine_tuning_service.response_performance[character] = \
+                fine_tuning_service.response_performance[character][-100:]
+        
+        # Update optimization metrics
+        quality_score = metrics.get('quality_score', 0)
+        quality_passed = metrics.get('quality_passed', True)
+        
+        fine_tuning_service.optimization_metrics['response_quality'].append(quality_score)
+        
+        # Calculate engagement score based on various factors
+        engagement_score = 0
+        if quality_passed:
+            engagement_score += 50
+        if quality_score > 80:
+            engagement_score += 30
+        if 'organic' in user_feedback:
+            engagement_score += 20
+        
+        fine_tuning_service.optimization_metrics['user_engagement'].append(engagement_score)
+        
+        # Calculate character authenticity score
+        authenticity_score = metrics.get('authenticity_score', quality_score)
+        fine_tuning_service.optimization_metrics['character_authenticity'].append(authenticity_score)
+        
+        # Keep metrics lists manageable
+        for metric_name in fine_tuning_service.optimization_metrics:
+            if len(fine_tuning_service.optimization_metrics[metric_name]) > 1000:
+                fine_tuning_service.optimization_metrics[metric_name] = \
+                    fine_tuning_service.optimization_metrics[metric_name][-1000:]
+        
+        logger.info(f"📊 Fine-tuning: Recorded performance for {character} - Quality: {quality_score}, Passed: {quality_passed}")
+        
+        # Analyze if we should trigger optimization
+        should_optimize = fine_tuning_service._should_trigger_optimization(character)
+        
+        result = {
+            'status': 'success',
+            'recorded': True,
+            'character': character,
+            'quality_score': quality_score,
+            'quality_passed': quality_passed,
+            'should_optimize': should_optimize,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        if should_optimize:
+            logger.info(f"🎯 Fine-tuning: Performance data suggests optimization needed for {character}")
+            result['optimization_suggested'] = True
+        
+        return jsonify(result), 200
         
     except Exception as e:
-        logger.error(f"Error recording performance: {str(e)}")
-        return jsonify({'error': f'Performance recording failed: {str(e)}'}), 500
+        logger.error(f"Error recording performance: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/performance-stats', methods=['GET'])
+def get_performance_stats():
+    """Get performance statistics for analysis"""
+    try:
+        character = request.args.get('character')
+        
+        if character:
+            # Character-specific stats
+            character_responses = fine_tuning_service.response_performance[character]
+            if not character_responses:
+                return jsonify({'error': f'No performance data for {character}'}), 404
+            
+            # Calculate character-specific metrics
+            recent_responses = character_responses[-20:]  # Last 20 responses
+            quality_scores = [r['quality_score'] for r in recent_responses if 'quality_score' in r]
+            quality_passes = [r['quality_passed'] for r in recent_responses if 'quality_passed' in r]
+            
+            avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
+            pass_rate = sum(quality_passes) / len(quality_passes) if quality_passes else 0
+            
+            return jsonify({
+                'character': character,
+                'total_responses': len(character_responses),
+                'recent_responses': len(recent_responses),
+                'average_quality_score': round(avg_quality, 2),
+                'quality_pass_rate': round(pass_rate * 100, 1),
+                'optimization_suggested': avg_quality < 75 or pass_rate < 0.8
+            }), 200
+        
+        else:
+            # Overall stats
+            all_stats = {}
+            for char in fine_tuning_service.response_performance:
+                responses = fine_tuning_service.response_performance[char]
+                if responses:
+                    recent = responses[-10:]
+                    quality_scores = [r['quality_score'] for r in recent if 'quality_score' in r]
+                    quality_passes = [r['quality_passed'] for r in recent if 'quality_passed' in r]
+                    
+                    all_stats[char] = {
+                        'total_responses': len(responses),
+                        'recent_avg_quality': round(sum(quality_scores) / len(quality_scores), 2) if quality_scores else 0,
+                        'recent_pass_rate': round(sum(quality_passes) / len(quality_passes) * 100, 1) if quality_passes else 0
+                    }
+            
+            return jsonify({
+                'overall_stats': all_stats,
+                'total_characters_tracked': len(all_stats),
+                'timestamp': datetime.now().isoformat()
+            }), 200
+            
+    except Exception as e:
+        logger.error(f"Error getting performance stats: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/ab-test/create', methods=['POST'])
 def create_ab_test():

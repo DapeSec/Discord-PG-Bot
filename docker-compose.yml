@@ -125,7 +125,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Fine-Tuning Service - Response optimization and A/B testing
+  # Fine-Tuning Service - Model fine-tuning and optimization
   fine-tuning:
     build:
       context: .
@@ -138,10 +138,13 @@ services:
       - PYTHONUNBUFFERED=1
       - FINE_TUNING_PORT=6004
       - REDIS_URL=redis://keydb:6379
+      - LLM_SERVICE_URL=http://llm-service:6001
     ports:
       - "6004:6004"
     depends_on:
       keydb:
+        condition: service_healthy
+      llm-service:
         condition: service_healthy
     networks:
       - bot_network
@@ -174,45 +177,6 @@ services:
       - bot_network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6006/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Orchestrator Service - Organic conversation management
-  orchestrator:
-    build:
-      context: .
-      dockerfile: docker/services/orchestrator.dockerfile
-    container_name: orchestrator
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      - PYTHONUNBUFFERED=1
-      - ORCHESTRATOR_PORT=6008
-      - REDIS_URL=redis://keydb:6379
-      - MESSAGE_ROUTER_URL=http://message-router:6005
-      - LLM_SERVICE_URL=http://llm-service:6001
-      - RAG_RETRIEVER_URL=http://rag-retriever:6007
-      - MIN_TIME_BETWEEN_ORGANIC_CONVERSATIONS=5
-      - CONVERSATION_SILENCE_THRESHOLD_MINUTES=15
-      - ORGANIC_CONVERSATION_PROBABILITY=0.4
-      - DEFAULT_DISCORD_CHANNEL_ID=${DEFAULT_DISCORD_CHANNEL_ID}
-    ports:
-      - "6008:6008"
-    depends_on:
-      keydb:
-        condition: service_healthy
-      message-router:
-        condition: service_healthy
-      llm-service:
-        condition: service_healthy
-      rag-retriever:
-        condition: service_healthy
-    networks:
-      - bot_network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6008/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -334,7 +298,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PETER_DISCORD_PORT=6011
-      - MESSAGE_ROUTER_URL=http://message-router:6005/orchestrate
+      - MESSAGE_ROUTER_URL=http://message-router:6005
       - DISCORD_BOT_TOKEN_PETER=${DISCORD_BOT_TOKEN_PETER}
     ports:
       - "6011:6011"
@@ -361,7 +325,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - BRIAN_DISCORD_PORT=6012
-      - MESSAGE_ROUTER_URL=http://message-router:6005/orchestrate
+      - MESSAGE_ROUTER_URL=http://message-router:6005
       - DISCORD_BOT_TOKEN_BRIAN=${DISCORD_BOT_TOKEN_BRIAN}
     ports:
       - "6012:6012"
@@ -388,7 +352,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STEWIE_DISCORD_PORT=6013
-      - MESSAGE_ROUTER_URL=http://message-router:6005/orchestrate
+      - MESSAGE_ROUTER_URL=http://message-router:6005
       - DISCORD_BOT_TOKEN_STEWIE=${DISCORD_BOT_TOKEN_STEWIE}
     ports:
       - "6013:6013"

@@ -28,4 +28,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:6001/health || exit 1
 
 # Run with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:6001", "--workers", "2", "--timeout", "120", "src.services.llm_service.server:app"] 
+CMD ["gunicorn", "--bind", "0.0.0.0:6001", "--workers", "1", "--timeout", "120", "src.services.llm_service.server:app"] 

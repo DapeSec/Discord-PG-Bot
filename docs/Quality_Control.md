@@ -10,7 +10,7 @@ This system helps prevent out-of-character remarks, nonsensical replies, or resp
 
 The QC system is integrated into the **Orchestrator** service and primarily involves:
 
-*   **LLM-based Assessment (Ollama - `mistral-nemo`)**: The core of the QC system is another call to the LLM. After an initial response is generated for a character, a separate, specialized prompt is sent to the LLM to evaluate that response.
+*   **LLM-based Assessment (Ollama - `llama3:8b-instruct-q5_K_M`)**: The core of the QC system is another call to the LLM. After an initial response is generated for a character, a separate, specialized prompt is sent to the LLM to evaluate that response.
 *   **QC Prompts (Orchestrator)**: These are carefully crafted prompts that instruct the LLM to act as an evaluator. The prompt asks the LLM to rate the candidate response on several dimensions (e.g., character voice, relevance, safety, humor) and provide a numerical score and/or a brief justification.
     *Example QC Prompt Snippet:*
     ```
@@ -71,10 +71,10 @@ graph TD
 
 ## 3. Workflow
 
-1.  **Initial Response Generation**: The Orchestrator generates a candidate response from `mistral-nemo` based on the user's query, conversation history, character prompt, and any RAG context.
+1.  **Initial Response Generation**: The Orchestrator generates a candidate response from `llama3:8b-instruct-q5_K_M` based on the user's query, conversation history, character prompt, and any RAG context.
 2.  **QC Check (If Enabled)**: If `ENABLE_QUALITY_CONTROL` is true:
     a.  **Prepare QC Prompt**: The Orchestrator constructs a QC prompt, including the character details, the original user query, and the candidate bot response.
-    b.  **LLM Assessment**: This QC prompt is sent to `mistral-nemo`.
+    b.  **LLM Assessment**: This QC prompt is sent to `llama3:8b-instruct-q5_K_M`.
     c.  **Receive Assessment**: The LLM returns a structured assessment (e.g., scores for different criteria, overall score, textual feedback).
 3.  **Decision Making**:
     a.  **Parse Score**: The Orchestrator extracts the overall quality score.

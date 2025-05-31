@@ -155,35 +155,35 @@ class RetryManager:
 class RetryConfig:
     """Predefined retry configurations for different operation types."""
     
-    # Discord message sending - critical, deserves 2 attempts
+    # Discord message sending - critical, deserves 10 attempts for better quality
     DISCORD_MESSAGE = {
-        "max_attempts": 2,
+        "max_attempts": 10,  # Increased from 2 to 10 for better responses
         "base_delay": 0.5,
         "operation_name": "discord_message"
     }
     
-    # Fallback generation - less critical, 1 attempt only 
+    # Fallback generation - increased to 3 attempts since these are important 
     FALLBACK_GENERATION = {
-        "max_attempts": 1,  # No retries for fallbacks to prevent cascading
+        "max_attempts": 3,  # Increased from 1 to 3 for better fallbacks
         "base_delay": 0.3,
         "operation_name": "fallback_generation"
     }
     
-    # Quality control check - fast operation, 2 attempts
+    # Quality control check - fast operation, increased to 3 attempts
     QUALITY_CHECK = {
-        "max_attempts": 2,
+        "max_attempts": 3,  # Increased from 2 to 3
         "base_delay": 0.2,
         "operation_name": "quality_check"
     }
     
-    # Message router orchestration - core operation, 2 attempts
+    # Message router orchestration - core operation, increased to 5 attempts
     MESSAGE_ROUTER = {
-        "max_attempts": 2,
+        "max_attempts": 5,  # Increased from 2 to 5
         "base_delay": 0.5,
         "operation_name": "message_router"
     }
     
-    # Organic conversation analysis - background operation, 1 attempt only
+    # Organic conversation analysis - background operation, kept at 1 attempt
     ORGANIC_ANALYSIS = {
         "max_attempts": 1,  # No retries to prevent exponential explosion
         "base_delay": 0.3,

@@ -103,12 +103,12 @@ Get-Process -Name "ollama"
 # 2. Start Ollama if not running
 ollama serve
 
-# 3. Ensure mistral-nemo model is installed
-ollama pull mistral-nemo
+# 3. Ensure llama3:8b-instruct-q5_K_M model is installed
+ollama pull llama3:8b-instruct-q5_K_M
 ollama list  # Verify model is available
 
 # 4. Test Ollama directly
-ollama run mistral-nemo "Hello, test message"
+ollama run llama3:8b-instruct-q5_K_M "Hello, test message"
 
 # 5. Check Docker can reach Ollama
 docker run --rm alpine ping host.docker.internal
@@ -118,7 +118,7 @@ docker run --rm alpine ping host.docker.internal
 ```bash
 # Verify correct Ollama configuration in .env
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=mistral-nemo
+OLLAMA_MODEL=llama3:8b-instruct-q5_K_M
 ```
 
 ### **3. Discord Bot Token Issues**
@@ -303,7 +303,7 @@ DEFAULT_DISCORD_CHANNEL_ID=your_channel_id
 
 # LLM configuration  
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=mistral-nemo
+OLLAMA_MODEL=llama3:8b-instruct-q5_K_M
 
 # KeyDB caching
 REDIS_URL=redis://keydb:6379
@@ -355,7 +355,7 @@ command: >
 If you're still having issues:
 
 1. **Check the logs**: `docker-compose logs -f`
-2. **Verify prerequisites**: Ensure Docker, Ollama, and mistral-nemo are working
+2. **Verify prerequisites**: Ensure Docker, Ollama, and llama3:8b-instruct-q5_K_M are working
 3. **Check Discord bot permissions**: Ensure bots have proper permissions in your server
 4. **Verify tokens**: Make sure Discord bot tokens are correct in `.env`
 5. **Check network**: Ensure no firewall is blocking the ports
@@ -510,7 +510,7 @@ curl http://localhost:5003/health
 If you're still having issues:
 
 1. **Check the logs**: `docker-compose logs -f`
-2. **Verify prerequisites**: Ensure Docker, Ollama, and mistral-nemo are working
+2. **Verify prerequisites**: Ensure Docker, Ollama, and llama3:8b-instruct-q5_K_M are working
 3. **Check Discord bot permissions**: Ensure bots have proper permissions in your server
 4. **Verify tokens**: Make sure Discord bot tokens are correct in `.env`
 5. **Check network**: Ensure no firewall is blocking the ports

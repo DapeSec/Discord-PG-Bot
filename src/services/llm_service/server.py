@@ -24,8 +24,8 @@ load_dotenv()
 
 # --- Service Configuration ---
 LLM_SERVICE_PORT = int(os.getenv("LLM_SERVICE_PORT", "6001"))
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral-nemo")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:8b-instruct-q5_K_M")
 
 # Cache configuration
 RESPONSE_CACHE_TTL = int(os.getenv("LLM_RESPONSE_CACHE_TTL", "3600"))  # 1 hour

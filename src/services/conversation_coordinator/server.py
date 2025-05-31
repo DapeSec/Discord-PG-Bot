@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 import logging
 import json
 import random
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta
 import hashlib
 from collections import defaultdict, deque
@@ -12,11 +12,17 @@ import requests
 import traceback
 from dotenv import load_dotenv
 
+# Import retry manager for standardized quality control retries
+from utils.retry_manager import retry_sync, RetryConfig
+
 # Load environment variables
 load_dotenv()
 
 # Service URLs
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm-service:6001")
+CHARACTER_CONFIG_URL = os.getenv("CHARACTER_CONFIG_API_URL", "http://character-config:6006")
+QUALITY_CONTROL_URL = os.getenv("QUALITY_CONTROL_URL", "http://quality-control:6003")
+FINE_TUNING_URL = os.getenv("FINE_TUNING_URL", "http://fine-tuning:6004")
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -698,6 +704,437 @@ Focus on natural conversation flow. Not every message needs a follow-up."""
             'timestamp': datetime.now().isoformat()
         }
 
+    def analyze_conversation_continuation(self, conversation_history: List[Dict[str, Any]], 
+                                        responding_character: str, response_text: str, 
+                                        channel_id: str) -> Dict[str, Any]:
+        """
+        Use LLM to intelligently determine if the conversation should continue or end naturally.
+        Returns: {"continue": bool, "reason": str, "suggested_character": str}
+        """
+        try:
+            # Get recent conversation context (last 10 messages)
+            recent_messages = conversation_history[-10:] if len(conversation_history) > 10 else conversation_history
+            
+            # Format conversation for analysis
+            conversation_context = ""
+            for msg in recent_messages:
+                character = msg.get("character", "user")
+                content = msg.get("content", "")
+                if character == "user":
+                    conversation_context += f"User: {content}\n"
+                else:
+                    conversation_context += f"{character.title()}: {content}\n"
+            
+            # Add the current response
+            conversation_context += f"{responding_character.title()}: {response_text}\n"
+            
+            # Available characters (exclude the one who just responded)
+            all_characters = ["peter", "brian", "stewie"]
+            available_characters = [char for char in all_characters if char != responding_character.lower()]
+            
+            # Create analysis prompt
+            analysis_prompt = f"""
+Analyze this Family Guy conversation to determine if it should continue organically.
+
+CONVERSATION:
+{conversation_context}
+
+ANALYSIS CRITERIA (BE PERMISSIVE - Family Guy conversations are naturally chaotic and ongoing):
+- Does the conversation have natural momentum? (favor YES unless clearly ended)
+- Would other characters naturally react to what was just said?
+- Is there comedic potential for more back-and-forth?
+- Are characters likely to have opinions on this topic?
+- Has the conversation truly reached a definitive conclusion?
+
+BIAS TOWARD CONTINUATION: Only say NO if the conversation has CLEARLY ended (like "goodbye", "end of discussion", or everyone has thoroughly exhausted the topic).
+
+CHARACTERS AVAILABLE: {', '.join([char.title() for char in available_characters])} (excluding {responding_character.title()})
+
+DECISION: Should another character organically join this conversation?
+
+Respond with EXACTLY this format:
+CONTINUE: [YES/NO]
+REASON: [Brief explanation - be generous with YES decisions]
+CHARACTER: [If YES, suggest which character might naturally respond, or NONE if NO]
+
+Examples of when to CONTINUE YES:
+- Someone made a controversial statement
+- A topic was mentioned that others would have opinions on
+- There's comedic potential for reactions
+- Characters would naturally banter about this
+- The conversation feels like it has momentum
+
+Examples of when to CONTINUE NO:
+- Someone explicitly ended the conversation ("I'm done", "whatever", "goodbye")
+- The topic has been completely exhausted with multiple back-and-forth exchanges
+- Characters have clearly moved on to other activities
+"""
+
+            # Get LLM analysis
+            response = requests.post(
+                f"{LLM_SERVICE_URL}/generate",
+                json={
+                    "prompt": analysis_prompt,
+                    "user_message": response_text,
+                    "chat_history": recent_messages,
+                    "settings": {
+                        "temperature": 0.3,  # Lower temperature for more consistent analysis
+                        "max_tokens": 200
+                    }
+                },
+                timeout=15
+            )
+            
+            if response.status_code != 200:
+                logger.warning(f"LLM request failed with status {response.status_code}")
+                return {"continue": False, "reason": "LLM analysis failed", "suggested_character": None}
+            
+            analysis_text = response.json().get("response", "").strip()
+            logger.info(f"🧠 Conversation Analysis: {analysis_text}")
+            
+            # Parse the response with fallback to continue if unclear
+            continue_decision = True  # Default to continue (more permissive)
+            reason = "Default: favoring conversation continuation"
+            suggested_character = None
+            
+            lines = analysis_text.split('\n')
+            continue_found = False
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith("CONTINUE:"):
+                    continue_found = True
+                    # Only set to False if explicitly NO, otherwise default to True
+                    continue_decision = "NO" not in line.upper()
+                elif line.startswith("REASON:"):
+                    reason = line.replace("REASON:", "").strip()
+                elif line.startswith("CHARACTER:"):
+                    char_text = line.replace("CHARACTER:", "").strip().lower()
+                    if char_text != "none" and char_text in available_characters:
+                        suggested_character = char_text
+            
+            # If we didn't find a clear CONTINUE directive, default to True
+            if not continue_found:
+                continue_decision = True
+                reason = "No clear directive found, defaulting to continue conversation"
+                logger.info(f"⚠️ No CONTINUE directive found in LLM response, defaulting to continue")
+            
+            # If continuing but no character suggested, pick a random available one
+            if continue_decision and not suggested_character and available_characters:
+                suggested_character = random.choice(available_characters)
+                logger.info(f"🎲 No character suggested, randomly selected: {suggested_character}")
+            
+            logger.info(f"📊 Conversation Decision: CONTINUE={continue_decision}, CHARACTER={suggested_character}, REASON={reason}")
+            
+            return {
+                "continue": continue_decision,
+                "reason": reason,
+                "suggested_character": suggested_character,
+                "analysis_type": "llm_intelligent",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in conversation continuation analysis: {e}")
+            return {"continue": False, "reason": f"Analysis error: {str(e)}", "suggested_character": None}
+
+    def generate_organic_response(self, responding_character: str, previous_speaker: str, 
+                                previous_message: str, original_input: str, 
+                                conversation_history: List[Dict[str, Any]], channel_id: str) -> Optional[str]:
+        """Generate a proper organic response with context and quality validation."""
+        
+        def generate_response_with_quality_control() -> Optional[str]:
+            """Enhanced single attempt with fine-tuning integration and quality feedback loop."""
+            failed_attempts = []  # Track failed attempts for fine-tuning
+            
+            try:
+                # Step 1: Get base character configuration
+                response = requests.get(f"{CHARACTER_CONFIG_URL}/llm_prompt/{responding_character}", timeout=10)
+                if response.status_code != 200:
+                    logger.error(f"Failed to get character config: {response.status_code}")
+                    return None
+                
+                character_config = response.json()
+                base_prompt = character_config.get("llm_prompt", f"You are {responding_character} from Family Guy.")
+                
+                # Step 2: Get optimized prompt from fine-tuning service with retry context
+                optimized_prompt = base_prompt
+                fine_tuning_context = {
+                    "topic": "organic_follow_up",
+                    "conversation_context": {
+                        "previous_speaker": previous_speaker,
+                        "previous_message": previous_message,
+                        "recent_topics": [],
+                        "last_speaker": previous_speaker,
+                        "failed_attempts": failed_attempts  # Include failed attempts for learning
+                    },
+                    "retry_optimization": True  # Flag to indicate this is for retry optimization
+                }
+                
+                try:
+                    fine_tuning_response = requests.post(
+                        f"{FINE_TUNING_URL}/optimize-prompt",
+                        json={
+                            "character": responding_character,
+                            "context": fine_tuning_context
+                        },
+                        timeout=10
+                    )
+                    
+                    if fine_tuning_response.status_code == 200:
+                        ft_data = fine_tuning_response.json()
+                        if "optimized_prompt" in ft_data:
+                            optimized_prompt = ft_data["optimized_prompt"]
+                            logger.info(f"🔧 Using fine-tuned prompt for {responding_character} organic response")
+                        else:
+                            logger.warning(f"⚠️ Fine-tuning response missing optimized_prompt")
+                    else:
+                        logger.warning(f"⚠️ Fine-tuning service unavailable: {fine_tuning_response.status_code}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Fine-tuning service error: {e}")
+                
+                # Step 3: Generate response with LLM service
+                conversation_context = "\n".join([
+                    f"{msg.get('character', 'unknown')}: {msg.get('content', '')}" 
+                    for msg in conversation_history[-3:] if msg.get('content')
+                ])
+                
+                organic_input = f"""ORGANIC FOLLOW-UP OPPORTUNITY:
+Previous Speaker: {previous_speaker}
+Previous Message: "{previous_message}"
+Recent Context: {conversation_context}
+
+Generate a natural {responding_character} response that feels like a spontaneous interruption or follow-up."""
+                
+                llm_response = requests.post(
+                    f"{LLM_SERVICE_URL}/generate",
+                    json={
+                        "prompt": optimized_prompt,
+                        "user_message": organic_input,
+                        "chat_history": conversation_history[-5:],  # Include recent history
+                        "settings": character_config.get("llm_settings", {})
+                    },
+                    timeout=25
+                )
+                
+                if llm_response.status_code != 200:
+                    logger.error(f"LLM service error: {llm_response.status_code}")
+                    return None
+                
+                generated_response = llm_response.json()["response"]
+                
+                # Step 4: Quality control validation
+                quality_response = requests.post(
+                    f"{QUALITY_CONTROL_URL}/analyze",
+                    json={
+                        "response": generated_response,
+                        "character": responding_character,
+                        "conversation_id": channel_id,
+                        "context": previous_message,
+                        "last_speaker": previous_speaker,
+                        "message_type": "organic_response"  # Flag as organic for appropriate thresholds
+                    },
+                    timeout=15
+                )
+                
+                if quality_response.status_code == 200:
+                    quality_data = quality_response.json()
+                    quality_passed = quality_data.get("quality_check_passed", True)
+                    quality_score = quality_data.get("overall_score", 85)
+                    
+                    # Step 5: Record performance in fine-tuning service
+                    response_id = f"organic_{channel_id}_{responding_character}_{int(datetime.now().timestamp())}"
+                    
+                    try:
+                        # Always record performance data for learning (both pass and fail)
+                        performance_metrics = {
+                            "quality_score": quality_score,
+                            "message_type": "organic_response",
+                            "previous_speaker": previous_speaker,
+                            "conversation_length": len(conversation_history),
+                            "quality_passed": quality_passed,
+                            "character_used": responding_character,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        
+                        # Record performance for learning
+                        requests.post(
+                            f"{FINE_TUNING_URL}/record-performance",
+                            json={
+                                "response_id": response_id,
+                                "character": responding_character,
+                                "metrics": performance_metrics,
+                                "user_feedback": "quality_pass" if quality_passed else "quality_fail"
+                            },
+                            timeout=5  # Non-blocking
+                        )
+                        
+                        if quality_passed:
+                            logger.info(f"✅ Organic response quality: {quality_score} - PASSED")
+                            return generated_response
+                        else:
+                            # Record failure for fine-tuning improvement
+                            failed_attempts.append({
+                                "response": generated_response,
+                                "quality_score": quality_score,
+                                "issues": quality_data.get("conversation_flow", {}).get("issues", []),
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+                            logger.warning(f"❌ Organic response quality: {quality_score} - FAILED")
+                            
+                            # Send failure feedback to fine-tuning for learning
+                            requests.post(
+                                f"{FINE_TUNING_URL}/record-performance",
+                                json={
+                                    "response_id": f"{response_id}_failed",
+                                    "character": responding_character,
+                                    "metrics": {**performance_metrics, "failure_reason": "quality_control"},
+                                    "user_feedback": "quality_control_rejection",
+                                    "failed_response_text": generated_response,
+                                    "quality_issues": quality_data.get("conversation_flow", {}).get("issues", [])
+                                },
+                                timeout=5
+                            )
+                            return None
+                    
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to record performance: {e}")
+                        # Still return the response if quality passed, even if recording failed
+                        if quality_passed:
+                            return generated_response
+                        return None
+                
+                else:
+                    logger.error(f"Quality control service error: {quality_response.status_code}")
+                    # Without quality control, we can't be sure of quality, so return None
+                    return None
+                
+            except Exception as e:
+                logger.error(f"Error in organic response generation: {e}")
+                return None
+        
+        # Use the retry manager for the entire quality-controlled generation process
+        try:
+            return retry_sync(
+                operation=generate_response_with_quality_control,
+                service_name="Conversation Coordinator Organic",
+                **RetryConfig.DISCORD_MESSAGE  # Use 10 attempts with exponential backoff
+            )
+        except Exception as e:
+            logger.error(f"All organic response generation attempts failed: {e}")
+            return None
+
+    def handle_organic_notification(self, notification_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle organic conversation notification - the main entry point for intelligent conversation flow.
+        This replaces the logic that was previously in the message router.
+        """
+        try:
+            event_type = notification_data.get("event_type")
+            if event_type != "direct_response_sent":
+                return {
+                    "success": False,
+                    "error": f"Unsupported event type: {event_type}"
+                }
+            
+            responding_character = notification_data.get("responding_character")
+            response_text = notification_data.get("response_text")
+            original_input = notification_data.get("original_input")
+            channel_id = notification_data.get("channel_id")
+            conversation_history = notification_data.get("conversation_history", [])
+            
+            if not all([responding_character, response_text, channel_id]):
+                return {
+                    "success": False,
+                    "error": "Missing required fields: responding_character, response_text, channel_id"
+                }
+            
+            logger.info(f"🔔 Conversation Coordinator: Received organic notification from {responding_character} in channel {channel_id}")
+            
+            # Analyze if conversation should continue using LLM intelligence
+            conversation_analysis = self.analyze_conversation_continuation(
+                conversation_history=conversation_history,
+                responding_character=responding_character,
+                response_text=response_text,
+                channel_id=channel_id
+            )
+            
+            if not conversation_analysis["continue"]:
+                logger.info(f"🌱 Ending conversation naturally - {conversation_analysis['reason']}")
+                return {
+                    "success": True,
+                    "action": "conversation_ended",
+                    "reason": conversation_analysis["reason"]
+                }
+            
+            logger.info(f"🌱 Conversation should continue - {conversation_analysis['reason']}")
+            
+            # Use suggested character from analysis
+            suggested_character = conversation_analysis.get("suggested_character")
+            
+            if not suggested_character:
+                # Fall back to our existing organic analysis if no character suggested
+                all_characters = ["peter", "brian", "stewie"]
+                available_characters = [char for char in all_characters if char != responding_character.lower()]
+                
+                organic_analysis = self.analyze_organic_conversation_opportunity(
+                    current_message=response_text,
+                    current_character=responding_character,
+                    conversation_id=channel_id,
+                    available_characters=available_characters
+                )
+                
+                if not organic_analysis.get("should_respond"):
+                    logger.info(f"🌱 No character selected for organic follow-up")
+                    return {
+                        "success": True,
+                        "action": "no_followup",
+                        "reason": organic_analysis.get("reasoning", "No suitable character found")
+                    }
+                
+                suggested_character = organic_analysis.get("selected_character")
+            
+            if not suggested_character:
+                return {
+                    "success": True,
+                    "action": "no_followup",
+                    "reason": "No suitable character identified for organic response"
+                }
+            
+            # Generate organic response with full context
+            organic_response = self.generate_organic_response(
+                responding_character=suggested_character,
+                previous_speaker=responding_character,
+                previous_message=response_text,
+                original_input=original_input or response_text,
+                conversation_history=conversation_history,
+                channel_id=channel_id
+            )
+            
+            if not organic_response:
+                return {
+                    "success": False,
+                    "error": f"Failed to generate organic response for {suggested_character}"
+                }
+            
+            # Return the generated response for the message router to send
+            return {
+                "success": True,
+                "action": "organic_response_generated",
+                "character": suggested_character,
+                "response": organic_response,
+                "reasoning": conversation_analysis["reason"],
+                "confidence": conversation_analysis.get("confidence", 0.8)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in organic notification handler: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
 # Initialize service
 coordinator = ConversationCoordinator()
 
@@ -830,6 +1267,122 @@ def analyze_organic_opportunity():
         
     except Exception as e:
         logger.error(f"Error in organic opportunity analysis: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/analyze-conversation-continuation', methods=['POST'])
+def analyze_conversation_continuation():
+    """Analyze if a conversation should continue or end naturally using LLM intelligence."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        # Required fields
+        conversation_history = data.get('conversation_history', [])
+        responding_character = data.get('responding_character', '').strip()
+        response_text = data.get('response_text', '').strip()
+        channel_id = data.get('channel_id', 'default')
+        
+        if not conversation_history or not responding_character or not response_text or not channel_id:
+            return jsonify({
+                'error': 'Missing required fields: conversation_history, responding_character, response_text, channel_id'
+            }), 400
+        
+        # Perform intelligent analysis
+        analysis_result = coordinator.analyze_conversation_continuation(
+            conversation_history=conversation_history,
+            responding_character=responding_character,
+            response_text=response_text,
+            channel_id=channel_id
+        )
+        
+        return jsonify({
+            'success': True,
+            'analysis': analysis_result
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in conversation continuation analysis: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/generate-organic-response', methods=['POST'])
+def generate_organic_response():
+    """Generate a proper organic response with context using LLM intelligence."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        # Required fields
+        responding_character = data.get('responding_character', '').strip()
+        previous_speaker = data.get('previous_speaker', '').strip()
+        previous_message = data.get('previous_message', '').strip()
+        original_input = data.get('original_input', '').strip()
+        conversation_history = data.get('conversation_history', [])
+        channel_id = data.get('channel_id', 'default')
+        
+        if not responding_character or not previous_speaker or not previous_message or not original_input or not channel_id:
+            return jsonify({
+                'error': 'Missing required fields: responding_character, previous_speaker, previous_message, original_input, channel_id'
+            }), 400
+        
+        # Perform intelligent analysis
+        organic_response = coordinator.generate_organic_response(
+            responding_character=responding_character,
+            previous_speaker=previous_speaker,
+            previous_message=previous_message,
+            original_input=original_input,
+            conversation_history=conversation_history,
+            channel_id=channel_id
+        )
+        
+        if not organic_response:
+            return jsonify({
+                'error': 'Failed to generate organic response'
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'response': organic_response
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error generating organic response: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/handle-organic-notification', methods=['POST'])
+def handle_organic_notification():
+    """Handle organic conversation notification using LLM intelligence."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        # Perform intelligent analysis
+        analysis_result = coordinator.handle_organic_notification(data)
+        
+        return jsonify({
+            'success': True,
+            'analysis': analysis_result
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error handling organic notification: {e}")
         logger.error(traceback.format_exc())
         return jsonify({
             'success': False,

@@ -141,15 +141,23 @@ class EnhancedQualityControlService:
     def analyze_response_quality_enhanced(self, response: str, character: str, 
                                         conversation_id: str = "default", 
                                         context: str = "", 
-                                        last_speaker: str = None) -> Dict:
-        """Enhanced comprehensive response quality analysis with adaptive thresholds"""
+                                        last_speaker: str = None,
+                                        message_type: str = "direct") -> Dict:
+        """Enhanced comprehensive response quality analysis with adaptive thresholds and organic response support"""
         start_time = datetime.now()
+        
+        # Check if this is an organic response
+        is_organic_response = (message_type == "organic_response")
         
         # Get conversation history for adaptive assessment
         conversation_history = self._get_conversation_history(conversation_id)
         
-        # Calculate adaptive quality threshold
+        # Calculate adaptive quality threshold (stricter for organic responses)
         adaptive_threshold = self._calculate_adaptive_quality_threshold(conversation_history, conversation_id)
+        if is_organic_response:
+            # Apply minimal threshold increase for organic responses (reduced from +5.0 to +2.0)
+            adaptive_threshold = min(95.0, adaptive_threshold + 2.0)
+            logger.info(f"🌱 Quality Control: Applying organic response threshold: {adaptive_threshold}")
         
         # Get character-aware anti-hallucination settings
         char_settings = self._get_character_anti_hallucination_settings(character)
@@ -160,29 +168,42 @@ class EnhancedQualityControlService:
         engagement_score = self._calculate_engagement_score(response, char_settings)
         toxicity_score = self._calculate_toxicity_score(response)
         
-        # NEW: Conversation flow assessment
+        # Enhanced conversation flow assessment for organic responses
         flow_assessment = self._assess_conversation_flow_quality(
-            character, response, conversation_history, last_speaker, conversation_id
+            character, response, conversation_history, last_speaker, conversation_id, is_organic_response
         )
         
         # Character-specific validation
         character_violations = self._check_character_violations(response, character)
         
+        # Additional organic-specific validations
+        organic_violations = []
+        if is_organic_response:
+            organic_violations = self._check_organic_response_violations(response, character, last_speaker, context)
+            character_violations.extend(organic_violations)
+        
         # CRITICAL: Stage directions = automatic failure
         has_stage_directions = any("stage directions" in violation for violation in character_violations)
         has_third_person = any("third-person" in violation for violation in character_violations)
         has_length_violation = any("Discord length" in violation for violation in character_violations)
+        has_organic_violation = any("organic" in violation.lower() for violation in organic_violations)
         
-        if has_stage_directions or has_third_person or has_length_violation:
-            # Automatic failure for stage directions, third-person narration, or Discord length violations
+        if has_stage_directions or has_third_person or has_length_violation or has_organic_violation:
+            # Automatic failure for critical violations
             overall_score = 0.0
             quality_check_passed = False
+            logger.warning(f"❌ Quality Control: Critical violation detected for {character} ({message_type})")
         else:
             # Enhanced overall score calculation with flow weighting
             overall_score = self._calculate_enhanced_overall_score(
                 authenticity_score, hallucination_risk, engagement_score, 
                 toxicity_score, flow_assessment['flow_score']
             )
+            
+            # Moderate penalty for organic responses with poor flow (reduced from 20% to 10%)
+            if is_organic_response and flow_assessment['flow_score'] < 2.5:
+                overall_score *= 0.9  # 10% penalty for poor organic flow (reduced from 20%)
+                logger.warning(f"⚠️ Quality Control: Organic flow penalty applied to {character}")
             
             # Adaptive pass/fail determination
             quality_check_passed = overall_score >= adaptive_threshold
@@ -192,11 +213,13 @@ class EnhancedQualityControlService:
         
         analysis_time = (datetime.now() - start_time).total_seconds()
         
-        return {
+        result = {
             'overall_score': round(overall_score, 2),
             'quality_check_passed': quality_check_passed,
             'adaptive_threshold': adaptive_threshold,
             'conversation_state': self._get_conversation_state(len(conversation_history)),
+            'message_type': message_type,
+            'is_organic_response': is_organic_response,
             'metrics': {
                 'authenticity_score': round(authenticity_score, 2),
                 'hallucination_risk': round(hallucination_risk, 2),
@@ -216,7 +239,8 @@ class EnhancedQualityControlService:
                 'strengths': flow_assessment['strengths'],
                 'conversation_awareness': flow_assessment['conversation_awareness'],
                 'monologue_tendency': flow_assessment['monologue_tendency'],
-                'self_conversation_detected': flow_assessment.get('self_conversation_detected', False)
+                'self_conversation_detected': flow_assessment.get('self_conversation_detected', False),
+                'organic_flow_validation': flow_assessment.get('organic_flow_validation', {}) if is_organic_response else {}
             },
             'recommendations': self._generate_enhanced_recommendations(
                 authenticity_score, hallucination_risk, engagement_score, 
@@ -228,9 +252,16 @@ class EnhancedQualityControlService:
                 'response_length': len(response),
                 'response_hash': hashlib.md5(response.encode()).hexdigest()[:8],
                 'conversation_history_length': len(conversation_history),
-                'adaptive_features_enabled': True
+                'adaptive_features_enabled': True,
+                'organic_response_processing': is_organic_response
             }
         }
+        
+        # Log quality analysis result
+        status = "✅ PASSED" if quality_check_passed else "❌ FAILED"
+        logger.info(f"📊 Quality Control: {character} {message_type} - {status} (Score: {overall_score}/{adaptive_threshold})")
+        
+        return result
 
     def _calculate_adaptive_quality_threshold(self, conversation_history: List, conversation_id: str) -> float:
         """Calculate dynamic quality threshold based on conversation richness"""
@@ -262,11 +293,40 @@ class EnhancedQualityControlService:
 
     def _assess_conversation_flow_quality(self, character_name: str, response_text: str, 
                                         conversation_history: List, last_speaker: str = None,
-                                        conversation_id: str = "default") -> Dict:
+                                        conversation_id: str = "default", is_organic_response: bool = False) -> Dict:
         """Comprehensive conversation flow quality assessment"""
         score = 3.0  # Base score out of 5.0
         issues = []
         strengths = []
+        organic_flow_validation = {}
+        
+        # Enhanced validation for organic responses
+        if is_organic_response:
+            organic_flow_validation = self._validate_organic_flow(
+                response_text, character_name, last_speaker, conversation_history
+            )
+            
+            # Apply organic-specific scoring adjustments
+            if organic_flow_validation['natural_follow_up']:
+                score += 0.5
+                strengths.append("Natural organic follow-up")
+            else:
+                score -= 0.8
+                issues.append("Unnatural organic interruption")
+            
+            if organic_flow_validation['context_responsive']:
+                score += 0.3
+                strengths.append("Responsive to conversation context")
+            else:
+                score -= 0.6
+                issues.append("Ignores conversation context")
+            
+            if organic_flow_validation['appropriate_timing']:
+                score += 0.2
+                strengths.append("Good timing for organic response")
+            else:
+                score -= 0.4
+                issues.append("Poor timing for intervention")
         
         # 1. Self-Conversation Detection
         self_conversation_detected = False
@@ -333,8 +393,79 @@ class EnhancedQualityControlService:
             "monologue_tendency": monologue_score > awareness_score,
             "self_conversation_detected": self_conversation_detected,
             "awareness_indicators": awareness_score,
-            "monologue_indicators": monologue_score
+            "monologue_indicators": monologue_score,
+            "organic_flow_validation": organic_flow_validation if is_organic_response else {}
         }
+
+    def _validate_organic_flow(self, response_text: str, character_name: str, 
+                              last_speaker: str, conversation_history: List) -> Dict:
+        """Validate organic response flow patterns"""
+        validation = {
+            'natural_follow_up': False,
+            'context_responsive': False,
+            'appropriate_timing': False,
+            'flow_issues': [],
+            'flow_strengths': []
+        }
+        
+        # 1. Check for natural follow-up patterns
+        natural_follow_patterns = [
+            # Reactions
+            r'\b(yeah|yep|nah|nope|oh|wow|really|seriously|exactly)\b',
+            # Questions/clarifications
+            r'\b(what|why|how|when|where|who)\b.*\?',
+            # Agreements/disagreements
+            r'\b(i agree|i disagree|that\'s right|that\'s wrong|totally|absolutely)\b',
+            # Building on ideas
+            r'\b(and also|plus|besides|furthermore|on top of that)\b',
+            # Character-specific reactions
+            r'\b(sweet|awesome|dude|freakin\'|holy crap)\b',  # Peter
+            r'\b(indeed|precisely|actually|however|quite)\b',  # Brian
+            r'\b(blast|fool|peasant|excellent|fascinating)\b'  # Stewie
+        ]
+        
+        if any(re.search(pattern, response_text, re.IGNORECASE) for pattern in natural_follow_patterns):
+            validation['natural_follow_up'] = True
+            validation['flow_strengths'].append("Uses natural conversation connectors")
+        else:
+            validation['flow_issues'].append("Lacks natural follow-up language")
+        
+        # 2. Check context responsiveness
+        if conversation_history:
+            last_message = conversation_history[-1].get('text', '') if conversation_history else ''
+            
+            # Look for direct references to previous content
+            if last_message:
+                # Extract key words from last message
+                last_words = set(last_message.lower().split()) - {
+                    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for'
+                }
+                response_words = set(response_text.lower().split())
+                
+                # Check for word overlap or clear response indicators
+                if last_words & response_words or any(
+                    indicator in response_text.lower() 
+                    for indicator in ['that', 'this', 'it', 'you said', 'you mentioned']
+                ):
+                    validation['context_responsive'] = True
+                    validation['flow_strengths'].append("Responds to previous message content")
+                else:
+                    validation['flow_issues'].append("No clear response to previous message")
+        
+        # 3. Check timing appropriateness
+        # Organic responses should feel like natural interruptions, not forced entries
+        forced_entry_patterns = [
+            r'^(hey|hi|hello|so|anyway|by the way)',
+            r'\b(let me tell you|speaking of|that reminds me)\b'
+        ]
+        
+        if not any(re.search(pattern, response_text, re.IGNORECASE) for pattern in forced_entry_patterns):
+            validation['appropriate_timing'] = True
+            validation['flow_strengths'].append("Natural entry without forced conversation starters")
+        else:
+            validation['flow_issues'].append("Uses forced conversation entry patterns")
+        
+        return validation
 
     def _has_self_continuation_indicators(self, response: str) -> bool:
         """Detect if response appears to continue previous thought without break"""
@@ -545,7 +676,7 @@ class EnhancedQualityControlService:
         return max(0.0, min(100.0, overall))
 
     def _get_conversation_history(self, conversation_id: str) -> List[Dict]:
-        """Retrieve conversation history from KeyDB"""
+        """Retrieve conversation history from KeyDB with format compatibility"""
         if not self.redis_client:
             return []
         
@@ -557,7 +688,32 @@ class EnhancedQualityControlService:
             conversation_history = []
             for item in history_data:
                 try:
-                    conversation_history.append(json.loads(item))
+                    message_data = json.loads(item)
+                    
+                    # Handle both old Quality Control format and new Discord bot format
+                    if 'character' in message_data and 'text' in message_data:
+                        # Old Quality Control format - convert to standard
+                        standardized_message = {
+                            'timestamp': message_data.get('timestamp'),
+                            'character': message_data.get('character'),
+                            'text': message_data.get('text'),
+                            'quality_score': message_data.get('quality_score', 50.0)
+                        }
+                    elif 'message_type' in message_data and 'content' in message_data:
+                        # New Discord bot format - convert to standard
+                        standardized_message = {
+                            'timestamp': message_data.get('timestamp'),
+                            'character': message_data.get('message_type'),
+                            'text': message_data.get('content'),
+                            'quality_score': message_data.get('quality_score', 50.0)
+                        }
+                    else:
+                        # Skip malformed messages
+                        logger.warning(f"Quality Control: Skipping malformed history entry: {message_data}")
+                        continue
+                    
+                    conversation_history.append(standardized_message)
+                    
                 except json.JSONDecodeError:
                     continue
             
@@ -568,16 +724,19 @@ class EnhancedQualityControlService:
 
     def _store_conversation_turn(self, conversation_id: str, character: str, 
                                 response: str, quality_score: float):
-        """Store conversation turn in KeyDB"""
+        """Store conversation turn in KeyDB using Discord-compatible format"""
         if not self.redis_client:
             return
         
         try:
+            # Use Discord bot compatible format
             conversation_turn = {
                 'timestamp': datetime.now().isoformat(),
-                'character': character,
-                'text': response,
-                'quality_score': quality_score
+                'author': f"{character.title()} Griffin",  # Convert to proper name
+                'content': response,
+                'message_type': character,
+                'channel_id': conversation_id,
+                'quality_score': quality_score  # Keep for quality tracking
             }
             
             history_key = f"conversation_history:{conversation_id}"
@@ -810,6 +969,114 @@ class EnhancedQualityControlService:
         
         return violations
 
+    def _check_organic_response_violations(self, response: str, character: str, last_speaker: str, context: str) -> List[str]:
+        """Check for organic response specific violations (relaxed for better flow)"""
+        violations = []
+        
+        # 1. Check if character is responding to themselves (major violation)
+        if last_speaker and last_speaker.lower() == character.lower():
+            violations.append("Organic violation: Character responding to their own message")
+        
+        # 2. Relaxed context relevance check - be more permissive for organic responses
+        if context and len(context.strip()) > 10:  # Only check for longer contexts
+            context_lower = context.lower()
+            response_lower = response.lower()
+            
+            # Check for conversational connectors that show engagement (expanded list)
+            engagement_indicators = [
+                "yeah", "totally", "agree", "disagree", "that", "this", "it", "right", "true", 
+                "exactly", "absolutely", "well", "but", "however", "also", "too", "so", 
+                "anyway", "actually", "really", "oh", "hey", "wait", "what", "why", "how",
+                "peter", "brian", "stewie", "lois", "meg", "chris"  # Character names show engagement
+            ]
+            has_engagement = any(indicator in response_lower for indicator in engagement_indicators)
+            
+            # Basic context relevance check (more lenient)
+            context_words = set(context_lower.split())
+            response_words = set(response_lower.split())
+            
+            # Remove common words
+            common_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "is", "are", "was", "were", "i", "you", "he", "she", "it", "they", "we"}
+            context_words = context_words - common_words
+            response_words = response_words - common_words
+            
+            # Check for some shared words (basic relevance)
+            shared_words = context_words & response_words
+            
+            # Only flag as violation if there's NO shared content AND no engagement indicators AND it's clearly off-topic
+            if (len(context_words) > 5 and len(shared_words) == 0 and not has_engagement and 
+                len(response) > 50):  # Only check longer responses
+                
+                # Additional leniency: Allow character-specific typical responses
+                character_typical_responses = {
+                    "peter": ["holy crap", "sweet", "awesome", "freakin", "nyeheheh", "beer", "food"],
+                    "brian": ["indeed", "actually", "however", "sophisticated", "intellectual", "wine"],
+                    "stewie": ["blast", "fool", "inferior", "genius", "brilliant", "mother"]
+                }
+                
+                typical_phrases = character_typical_responses.get(character.lower(), [])
+                has_typical_response = any(phrase in response_lower for phrase in typical_phrases)
+                
+                # Only flag if it's truly irrelevant AND doesn't use typical character language
+                if not has_typical_response:
+                    violations.append("Organic violation: Response appears unrelated to conversation context")
+        
+        # 3. Very relaxed check for conversation starters - only flag obvious ones
+        organic_bad_starters = [
+            "hello everyone", "hi there", "good morning", "good evening", 
+            "let me start by saying", "i would like to begin"
+        ]
+        
+        response_start = response.lower().strip()[:20]  # Only check first 20 characters
+        if any(starter in response_start for starter in organic_bad_starters):
+            violations.append("Organic violation: Using formal conversation starter in organic follow-up")
+        
+        # 4. Increased length limit for organic responses (was 300, now 500)
+        if len(response) > 500:
+            violations.append("Organic violation: Response too long for natural follow-up")
+        
+        # 5. Relaxed repetitive content check
+        if context and response and len(response) > 30:
+            context_words = context.lower().split()
+            response_words = response.lower().split()
+            
+            # Check if response repeats too many words from context (more lenient)
+            if len(context_words) > 5 and len(response_words) > 5:
+                repeated_words = set(context_words) & set(response_words)
+                repeat_ratio = len(repeated_words) / len(set(response_words))
+                
+                if repeat_ratio > 0.8:  # Raised from 60% to 80%
+                    violations.append("Organic violation: Response repeats excessive content from previous message")
+        
+        # 6. Relaxed character-specific organic violations
+        character_lower = character.lower()
+        
+        if character_lower == "brian":
+            # Brian can use intellectual language if it fits the conversation
+            intellectual_tangent_indicators = ["furthermore", "consequently", "nevertheless", "notwithstanding"]
+            if any(indicator in response.lower() for indicator in intellectual_tangent_indicators):
+                # Only flag if using multiple overly formal words in short response
+                formal_count = sum(1 for indicator in intellectual_tangent_indicators if indicator in response.lower())
+                if formal_count >= 2 and len(response) < 100:
+                    violations.append("Organic violation: Brian using excessive formal language in brief response")
+        
+        elif character_lower == "stewie":
+            # Stewie can be dramatic, only flag truly excessive monologues
+            domination_indicators = ["plan", "scheme", "world domination", "fool", "inferior beings", "conquest"]
+            domination_count = sum(1 for ind in domination_indicators if ind in response.lower())
+            if domination_count >= 3 and len(response) > 200:  # Multiple indicators in long response
+                violations.append("Organic violation: Stewie launching excessive domination monologue")
+        
+        elif character_lower == "peter":
+            # Peter can bring up random topics, only flag if completely absurd
+            if len(response) > 300:  # Only check longer responses
+                peter_random_topics = ["chicken fight", "pawtucket brewery", "diarrhea", "giant chicken"]
+                unrelated_count = sum(1 for topic in peter_random_topics if topic in response.lower())
+                if unrelated_count >= 2:  # Multiple very specific unrelated topics
+                    violations.append("Organic violation: Peter introducing excessive unrelated specific topics")
+        
+        return violations
+
     # Legacy method for backwards compatibility
     def analyze_response_quality(self, response: str, character: str, context: str = "") -> Dict:
         """Legacy method - redirects to enhanced analysis"""
@@ -849,13 +1116,18 @@ def analyze_response():
         conversation_id = data.get('conversation_id', 'default')
         context = data.get('context', '')
         last_speaker = data.get('last_speaker')
+        message_type = data.get('message_type', 'direct')  # Support organic_response type
         
-        # Use enhanced analysis
+        # Use enhanced analysis with message type support
         analysis = quality_service.analyze_response_quality_enhanced(
-            response_text, character, conversation_id, context, last_speaker
+            response_text, character, conversation_id, context, last_speaker, message_type
         )
         
-        logger.info(f"Enhanced quality analysis completed for {character}: score={analysis['overall_score']}")
+        # Log the analysis type for debugging
+        if message_type == "organic_response":
+            logger.info(f"🌱 Quality Control: Processed organic response for {character} (ID: {conversation_id})")
+        else:
+            logger.info(f"📝 Quality Control: Processed direct response for {character} (ID: {conversation_id})")
         
         return jsonify(analysis)
         

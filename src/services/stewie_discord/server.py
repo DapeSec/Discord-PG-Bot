@@ -5,7 +5,7 @@ import traceback
 import hashlib
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, List
 from flask import Flask, jsonify, request
 from threading import Thread, Lock
 from dotenv import load_dotenv
@@ -18,7 +18,7 @@ load_dotenv()
 # Configuration
 STEWIE_DISCORD_PORT = int(os.getenv("STEWIE_DISCORD_PORT", "6013"))
 DISCORD_BOT_TOKEN_STEWIE = os.getenv("DISCORD_BOT_TOKEN_STEWIE")
-MESSAGE_ROUTER_URL = os.getenv("MESSAGE_ROUTER_URL", "http://message-router:6005/orchestrate")
+MESSAGE_ROUTER_URL = os.getenv("MESSAGE_ROUTER_URL", "http://message-router:6005")
 
 # Flask app for health checks and API
 app = Flask(__name__)
@@ -28,6 +28,10 @@ import sys
 import os.path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from utils.retry_manager import retry_async, RetryConfig
+
+# Import Redis for conversation history
+import redis
+import json
 
 class StewieDiscordBot:
     """Stewie Griffin Discord bot handler with spam protection."""
@@ -44,6 +48,9 @@ class StewieDiscordBot:
         self.last_response_time: Dict[str, float] = {}  # Rate limiting per channel
         self.RATE_LIMIT_SECONDS = 2  # Minimum time between responses per channel
         self.MESSAGE_CACHE_SIZE = 1000  # Limit memory usage
+        
+        # Initialize KeyDB connection for conversation history
+        self.redis_client = self._initialize_keydb()
         
         if not DISCORD_BOT_TOKEN_STEWIE:
             print("❌ Stewie Discord: DISCORD_BOT_TOKEN_STEWIE not set!")
@@ -134,10 +141,18 @@ class StewieDiscordBot:
                 if self.bot.user.mentioned_in(message):
                     content = content.replace(f'<@{self.bot.user.id}>', '').strip()
                 
+                # Store user message in conversation history
+                self._store_message_in_history(
+                    channel_id=channel_id,
+                    author=str(message.author),
+                    content=content,
+                    message_type="user"
+                )
+                
                 # Send typing indicator
                 async with message.channel.typing():
-                    # Get conversation history (simplified for now)
-                    conversation_history = []
+                    # Get conversation history from KeyDB
+                    conversation_history = self._get_conversation_history(channel_id, limit=15)
                     
                     # Define the message generation operation
                     async def generate_message():
@@ -155,15 +170,22 @@ class StewieDiscordBot:
                         
                         return response["data"]["response"]
                     
-                    # Use centralized retry for message generation
+                    # Use centralized retry for message generation (removed quality validation to fix asyncio errors)
                     stewie_response = await retry_async(
                         operation=generate_message,
-                        validation_func=lambda result: asyncio.run(self.check_response_quality(result, content, channel_id)) if result else False,
                         service_name="Stewie Discord",
                         **RetryConfig.DISCORD_MESSAGE
                     )
                     
                     if stewie_response:
+                        # Store Stewie's response in conversation history
+                        self._store_message_in_history(
+                            channel_id=channel_id,
+                            author="Stewie Griffin",
+                            content=stewie_response,
+                            message_type="stewie"
+                        )
+                        
                         # Success - send message and notify for organic analysis
                         await message.channel.send(stewie_response)
                         print(f"✅ Stewie Discord: Successfully sent response")
@@ -269,7 +291,6 @@ class StewieDiscordBot:
             # Use centralized retry for fallback generation (no retries to prevent cascading)
             fallback_text = await retry_async(
                 operation=generate_fallback,
-                validation_func=lambda result: asyncio.run(self.check_response_quality(result, original_input, channel_id)) if result else False,
                 service_name="Stewie Discord",
                 **RetryConfig.FALLBACK_GENERATION
             )
@@ -342,7 +363,7 @@ class StewieDiscordBot:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: requests.post(MESSAGE_ROUTER_URL, json=data, timeout=30)
+                lambda: requests.post(f"{MESSAGE_ROUTER_URL}/orchestrate", json=data, timeout=30)
             )
             
             if response.status_code == 200:
@@ -413,6 +434,113 @@ class StewieDiscordBot:
             "message_router_url": MESSAGE_ROUTER_URL,
             "timestamp": datetime.now().isoformat()
         }
+    
+    def _initialize_keydb(self):
+        """Initialize KeyDB connection for conversation history"""
+        try:
+            redis_url = os.getenv('REDIS_URL', 'redis://keydb:6379')
+            if redis_url.startswith('redis://'):
+                redis_client = redis.from_url(redis_url, decode_responses=True)
+            else:
+                host, port = redis_url.split(':')
+                redis_client = redis.Redis(host=host, port=int(port), decode_responses=True)
+            
+            # Test connection
+            redis_client.ping()
+            print("✅ Stewie Discord: Connected to KeyDB for conversation history")
+            return redis_client
+        except Exception as e:
+            print(f"❌ Stewie Discord: Failed to connect to KeyDB: {e}")
+            return None
+    
+    def _store_message_in_history(self, channel_id: str, author: str, content: str, message_type: str = "user"):
+        """Store message in conversation history."""
+        if not self.redis_client:
+            return
+        
+        try:
+            # Create message record
+            message_record = {
+                "timestamp": datetime.now().isoformat(),
+                "author": author,
+                "content": content,
+                "message_type": message_type,  # "user", "peter", "brian", "stewie"
+                "channel_id": channel_id
+            }
+            
+            # Store in ordered list for this channel
+            history_key = f"conversation_history:{channel_id}"
+            
+            # Add message to the end of the list
+            self.redis_client.lpush(history_key, json.dumps(message_record))
+            
+            # Keep only last 50 messages (trim list)
+            self.redis_client.ltrim(history_key, 0, 49)
+            
+            # Set expiry for 24 hours
+            self.redis_client.expire(history_key, 86400)
+            
+            print(f"💾 Stewie Discord: Stored message in conversation history for channel {channel_id}")
+            
+        except Exception as e:
+            print(f"⚠️ Stewie Discord: Failed to store message in history: {e}")
+    
+    def _get_conversation_history(self, channel_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Retrieve recent conversation history for a channel."""
+        if not self.redis_client:
+            return []
+        
+        try:
+            history_key = f"conversation_history:{channel_id}"
+            
+            # Get last 'limit' messages (they're stored in reverse order)
+            raw_messages = self.redis_client.lrange(history_key, 0, limit - 1)
+            
+            # Parse and reverse to get chronological order
+            messages = []
+            for raw_msg in reversed(raw_messages):
+                try:
+                    message_data = json.loads(raw_msg)
+                    
+                    # Enhanced validation with specific error reporting
+                    required_fields = ["message_type", "content", "timestamp"]
+                    missing_fields = []
+                    empty_fields = []
+                    
+                    for field in required_fields:
+                        if field not in message_data:
+                            missing_fields.append(field)
+                        elif not message_data[field] or message_data[field] == "":
+                            empty_fields.append(field)
+                    
+                    if missing_fields or empty_fields:
+                        error_details = []
+                        if missing_fields:
+                            error_details.append(f"missing: {missing_fields}")
+                        if empty_fields:
+                            error_details.append(f"empty: {empty_fields}")
+                        print(f"⚠️ Stewie Discord: Skipping malformed message - {', '.join(error_details)}")
+                        print(f"   Raw data: {message_data}")
+                        continue
+                    
+                    # Convert to format expected by message router
+                    formatted_message = {
+                        "role": "assistant" if message_data["message_type"] in ["peter", "brian", "stewie"] else "user",
+                        "content": message_data["content"],
+                        "character": message_data["message_type"] if message_data["message_type"] in ["peter", "brian", "stewie"] else "user",
+                        "timestamp": message_data["timestamp"]
+                    }
+                    messages.append(formatted_message)
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"⚠️ Stewie Discord: Skipping malformed message in history: {e}")
+                    continue
+            
+            print(f"📚 Stewie Discord: Retrieved {len(messages)} messages from conversation history for channel {channel_id}")
+            return messages
+            
+        except Exception as e:
+            print(f"⚠️ Stewie Discord: Failed to retrieve conversation history: {e}")
+            return []
 
 # Global bot instance - starts automatically when imported
 stewie_bot = StewieDiscordBot()
@@ -459,7 +587,7 @@ def send_message():
 
 @app.route('/organic-message', methods=['POST'])
 def send_organic_message():
-    """Receive and send organic follow-up messages from the message router with quality control."""
+    """Receive and send organic follow-up messages from the message router."""
     try:
         data = request.json
         if not data:
@@ -467,6 +595,7 @@ def send_organic_message():
         
         message_text = data.get('message')
         channel_id = data.get('channel_id')
+        is_organic = data.get('is_organic', True)  # Mark as organic by default
         
         if not message_text or not channel_id:
             return jsonify({
@@ -474,60 +603,95 @@ def send_organic_message():
                 "error": "Missing required fields: message, channel_id"
             }), 400
         
-        print(f"🌱 Stewie Discord: Received organic message for channel {channel_id}")
-        print(f"🌱 Stewie Discord: Message: {message_text}")
+        print(f"🌱 Stewie Discord: Received organic message for channel {channel_id} (organic: {is_organic})")
         
-        # CRITICAL: Run quality control on organic messages
-        async def send_with_quality_control():
-            """Send organic message with quality control validation."""
+        # Store organic message in conversation history before sending
+        stewie_bot._store_message_in_history(
+            channel_id=channel_id,
+            author="Stewie Griffin",
+            content=message_text,
+            message_type="stewie"
+        )
+        
+        # Send the message to Discord
+        success = send_message_to_discord(message_text, channel_id)
+        
+        if success:
+            print(f"✅ Stewie Discord: Successfully sent organic message to channel {channel_id}")
+            
+            # Send organic notification to continue the conversation chain
             try:
-                # Check quality before sending
-                quality_passed = await stewie_bot.check_response_quality(
-                    message_text, "", str(channel_id)
+                conversation_history = stewie_bot._get_conversation_history(channel_id)
+                
+                notification_data = {
+                    "event_type": "direct_response_sent",
+                    "responding_character": "stewie",
+                    "response_text": message_text,
+                    "original_input": message_text,  # For organic responses, use the response as context
+                    "channel_id": channel_id,
+                    "conversation_history": conversation_history,
+                    "is_organic_chain": True  # Flag to indicate this is part of an organic chain
+                }
+                
+                # Send notification to message router for continued organic analysis
+                response = requests.post(
+                    f"{MESSAGE_ROUTER_URL}/organic-notification",
+                    json=notification_data,
+                    timeout=5
                 )
                 
-                if not quality_passed:
-                    print(f"❌ Stewie Discord: Organic message FAILED quality control - rejecting")
-                    return False
-                
-                # Quality passed - send to Discord
+                if response.status_code == 200:
+                    print(f"✅ Stewie Discord: Organic chain notification sent to message router")
+                else:
+                    print(f"⚠️ Stewie Discord: Organic chain notification failed: {response.status_code}")
+                    
+            except Exception as e:
+                print(f"⚠️ Stewie Discord: Failed to send organic chain notification: {e}")
+            
+            return jsonify({"success": True, "message": "Organic message sent successfully"})
+        else:
+            print(f"❌ Stewie Discord: Failed to send organic message to channel {channel_id}")
+            return jsonify({"success": False, "error": "Failed to send message to Discord"}), 500
+        
+    except Exception as e:
+        print(f"❌ Stewie Discord: Error in organic message endpoint: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+def send_message_to_discord(message_text: str, channel_id: str) -> bool:
+    """Send a message to Discord via the Stewie bot."""
+    try:
+        if not stewie_bot.bot or not stewie_bot.bot.user or stewie_bot.bot.is_closed():
+            print(f"❌ Stewie Discord: Bot not ready for message sending")
+            return False
+        
+        # Create async function to send message
+        async def send_message():
+            try:
                 channel = stewie_bot.bot.get_channel(int(channel_id))
                 if channel:
                     await channel.send(message_text)
-                    print(f"✅ Stewie Discord: Organic message sent to channel {channel_id} (passed quality control)")
+                    print(f"✅ Stewie Discord: Message sent to channel {channel_id}")
                     return True
                 else:
                     print(f"❌ Stewie Discord: Channel {channel_id} not found")
                     return False
-                    
             except Exception as e:
-                print(f"❌ Stewie Discord: Error sending organic message: {e}")
+                print(f"❌ Stewie Discord: Error sending message: {e}")
                 return False
         
-        # Send the message to Discord with quality control
-        if stewie_bot.bot and stewie_bot.bot.user and not stewie_bot.bot.is_closed():
-            try:
-                # Get the bot's event loop and schedule the coroutine
-                loop = stewie_bot.bot.loop
-                if loop and not loop.is_closed():
-                    future = asyncio.run_coroutine_threadsafe(send_with_quality_control(), loop)
-                    success = future.result(timeout=10)  # Wait up to 10 seconds
-                    
-                    if success:
-                        return jsonify({"success": True, "message": "Organic message sent (passed quality control)"}), 200
-                    else:
-                        return jsonify({"success": False, "error": "Message failed quality control or send failed"}), 400
-                else:
-                    return jsonify({"success": False, "error": "Bot event loop not available"}), 503
-            except Exception as e:
-                print(f"❌ Stewie Discord: Error scheduling organic message: {e}")
-                return jsonify({"success": False, "error": f"Failed to send: {str(e)}"}), 500
+        # Get the bot's event loop and schedule the coroutine
+        loop = stewie_bot.bot.loop
+        if loop and not loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(send_message(), loop)
+            success = future.result(timeout=10)  # Wait up to 10 seconds
+            return success
         else:
-            return jsonify({"success": False, "error": "Bot not ready"}), 503
+            print(f"❌ Stewie Discord: Bot event loop not available")
+            return False
             
     except Exception as e:
-        print(f"❌ Stewie Discord: Exception in organic message handler: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        print(f"❌ Stewie Discord: Exception in send_message_to_discord: {e}")
+        return False
 
 # No Flask development server code needed - Gunicorn handles this
 if __name__ == '__main__':
